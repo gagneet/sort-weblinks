@@ -31,8 +31,9 @@ def extract_domain(url):
         return None
 
 def parse_links(file_path):
-    """Parse links from file, handling both formats"""
+    """Parse links from file, handling multiple formats"""
     entries = []
+    current_group = None
     
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = f.readlines()
@@ -40,6 +41,11 @@ def parse_links(file_path):
     for line in lines:
         line = line.strip()
         if not line:
+            continue
+            
+        # Check if this is a group header (ends with colon but doesn't contain URL)
+        if line.endswith(':') and 'http' not in line:
+            current_group = line[:-1]  # Remove the trailing colon
             continue
             
         # Pattern 1: Description: URL
@@ -52,14 +58,16 @@ def parse_links(file_path):
             entries.append({
                 'description': description.strip(),
                 'url': url.strip(),
-                'format': 'with_description'
+                'format': 'with_description',
+                'group': current_group
             })
         elif pattern2:
             url = pattern2.group(1)
             entries.append({
                 'description': None,
                 'url': url.strip(),
-                'format': 'raw_url'
+                'format': 'raw_url',
+                'group': current_group
             })
             
     return entries
@@ -68,7 +76,7 @@ def fetch_missing_titles(entries, max_fetch=50):
     """Fetch titles for entries without descriptions (limit to prevent too many requests)"""
     count = 0
     for entry in entries:
-        if entry['format'] == 'raw_url' and count < max_fetch:
+        if entry['format'] == 'raw_url' and not entry['description'] and count < max_fetch:
             print(f"Fetching title for {entry['url']}...")
             title = get_page_title(entry['url'])
             if title:
@@ -111,30 +119,44 @@ def get_keywords_for_cluster(descriptions, vectorizer, num_keywords=5):
 
 def extract_common_topics(entries):
     """Use domain and common words to identify topics"""
-    # Extract domains
-    domains = [extract_domain(entry['url']) for entry in entries if entry['url']]
+    # First, respect existing groups
+    existing_groups = {}
+    for entry in entries:
+        if entry['group']:
+            if entry['group'] not in existing_groups:
+                existing_groups[entry['group']] = []
+            existing_groups[entry['group']].append(entry)
+    
+    # Get entries without groups
+    ungrouped = [e for e in entries if not e['group']]
+    
+    # Extract domains for ungrouped entries
+    domains = [extract_domain(entry['url']) for entry in ungrouped if entry['url']]
     domain_counter = Counter([d for d in domains if d])
     
     # Find the most common domains
     common_domains = [domain for domain, count in domain_counter.most_common(5) if count > 1]
     
-    # Dictionary to store topic groupings
-    topics = {}
+    # Dictionary to store domain groupings
+    domain_topics = {}
     
-    # First, group by common domains
+    # Group by common domains
     for domain in common_domains:
-        topics[f"Resources from {domain}"] = [
-            entry for entry in entries 
+        domain_topics[f"Resources from {domain}"] = [
+            entry for entry in ungrouped 
             if extract_domain(entry['url']) == domain
         ]
     
     # Collect entries not yet categorized
     remaining_entries = [
-        entry for entry in entries 
+        entry for entry in ungrouped 
         if extract_domain(entry['url']) not in common_domains
     ]
     
-    return topics, remaining_entries
+    # Combine existing groups with domain-based groups
+    all_groups = {**existing_groups, **domain_topics}
+    
+    return all_groups, remaining_entries
 
 def main():
     file_path = 'weblinks.txt'
@@ -148,54 +170,81 @@ def main():
     print("Fetching titles for raw URLs...")
     entries = fetch_missing_titles(entries)
     
-    # 3. First group by common domains
-    print("Grouping by common domains...")
+    # 3. First respect existing groups and then group by common domains
+    print("Grouping by existing categories and common domains...")
     domain_topics, remaining_entries = extract_common_topics(entries)
     
     # 4. Use text clustering for the remaining entries
     print("Clustering remaining entries...")
-    descriptions = [entry['description'] for entry in remaining_entries if entry['description']]
+    # Filter out entries without descriptions
+    remaining_with_desc = [e for e in remaining_entries if e['description']]
     
-    if descriptions:
-        # Create TF-IDF features
-        vectorizer = TfidfVectorizer(
-            stop_words='english',
-            min_df=2,
-            max_df=0.8,
-            ngram_range=(1, 2)
-        )
-        X = vectorizer.fit_transform(descriptions)
+    if remaining_with_desc:
+        descriptions = [entry['description'] for entry in remaining_with_desc]
         
-        # Use DBSCAN for clustering (automatically determines number of clusters)
-        clustering = DBSCAN(eps=0.7, min_samples=2, metric='cosine')
-        clusters = clustering.fit_predict(X)
+        # FIX: Check number of documents before configuring vectorizer params
+        num_docs = len(descriptions)
         
-        # Group entries by cluster
-        text_topics = {}
-        unclustered = []
-        
-        for i, entry in enumerate(remaining_entries):
-            if not entry['description']:
-                unclustered.append(entry)
-                continue
+        # Dynamically adjust min_df and max_df based on corpus size
+        if num_docs <= 5:
+            # For very small corpus, use absolute counts and avoid max_df
+            vectorizer = TfidfVectorizer(
+                stop_words='english',
+                min_df=1,  # At least 1 document
+                max_df=1.0,  # No upper bound
+                ngram_range=(1, 2)
+            )
+        else:
+            # For larger corpus, use the original parameters
+            vectorizer = TfidfVectorizer(
+                stop_words='english',
+                min_df=1,
+                max_df=0.9,
+                ngram_range=(1, 2)
+            )
+            
+        try:
+            X = vectorizer.fit_transform(descriptions)
+            
+            # Adjust DBSCAN parameters for small datasets
+            min_samples = 2 if num_docs > 3 else 1
+            eps = 0.7  # Cosine distance threshold
+            
+            # Use DBSCAN for clustering
+            clustering = DBSCAN(eps=eps, min_samples=min_samples, metric='cosine')
+            clusters = clustering.fit_predict(X)
+            
+            # Group entries by cluster
+            text_topics = {}
+            unclustered = []
+            
+            for i, entry in enumerate(remaining_with_desc):
+                cluster_id = clusters[i]
+                if cluster_id == -1:
+                    # DBSCAN marks outliers as -1
+                    unclustered.append(entry)
+                else:
+                    if cluster_id not in text_topics:
+                        text_topics[cluster_id] = []
+                    text_topics[cluster_id].append(entry)
+            
+            # Generate topics names for each cluster
+            named_topics = {}
+            for cluster_id, cluster_entries in text_topics.items():
+                cluster_descriptions = [entry['description'] for entry in cluster_entries]
+                topic_name = get_keywords_for_cluster(cluster_descriptions, vectorizer)
+                named_topics[topic_name] = cluster_entries
                 
-            cluster_id = clusters[i]
-            if cluster_id == -1:
-                # DBSCAN marks outliers as -1
-                unclustered.append(entry)
-            else:
-                if cluster_id not in text_topics:
-                    text_topics[cluster_id] = []
-                text_topics[cluster_id].append(entry)
+        except ValueError as e:
+            # Handle vectorization errors by putting all entries in unclustered
+            print(f"Warning: Clustering failed ({str(e)}). Grouping remaining entries as Miscellaneous.")
+            named_topics = {}
+            unclustered = remaining_with_desc
+            
+        # Add entries without descriptions to unclustered
+        unclustered.extend([e for e in remaining_entries if not e['description']])
         
-        # Generate topics names for each cluster
-        named_topics = {}
-        for cluster_id, cluster_entries in text_topics.items():
-            cluster_descriptions = [entry['description'] for entry in cluster_entries]
-            topic_name = get_keywords_for_cluster(cluster_descriptions, vectorizer)
-            named_topics[topic_name] = cluster_entries
-        
-        # Combine domain-based and text-based topics
+        # Combine all topics
         all_topics = {**domain_topics, **named_topics}
         
         # Add unclustered as "Miscellaneous"

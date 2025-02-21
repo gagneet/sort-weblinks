@@ -81,5 +81,35 @@ This creates a situation where terms must appear in exactly 1 document, which ma
 
 The solution adaptively adjusts these parameters based on our dataset size, making our code much more robust.
 
+### 3. There are some links, which do not have a text for the link, describing the website/URI. Also, the links seems to have been sorted randomly.
 
-### 2. 
+1. Missing Link Descriptions
+The updated code now:
+
+- Handles GitHub repositories better by extracting the owner/repo name when no title is available
+- Recognizes when a link description is just the URL itself and tries to fetch a better title
+- Applies more intelligent fallbacks based on the URL type
+
+2. Better Categorization
+I've improved the categorization with:
+
+- Topic-based grouping for common link types (GitHub repos, API tools, web design resources, etc.)
+- Expanded keyword recognition to identify link purposes
+- More aggressive domain-based grouping to reduce the "Miscellaneous" category
+- Special handling for Stack Exchange sites (Stack Overflow, Super User)
+
+3. Link Sorting & Organization
+The output is now much more organized:
+
+- Links within each category are sorted alphabetically by description
+- Categories themselves are sorted alphabetically (with "Miscellaneous" at the end)
+- Added a table of contents with link counts
+- Added statistics about total links and categories
+
+4. Enhanced Link Format Recognition
+The parser now handles more formats:
+
+- Traditional "Description: URL" format
+- Bullet points (- or *)
+- "Description - URL" format with dash separator
+- URL-only entries
