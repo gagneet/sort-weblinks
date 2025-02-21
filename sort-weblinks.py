@@ -47,14 +47,28 @@ def parse_links(file_path):
         if line.endswith(':') and 'http' not in line:
             current_group = line[:-1]  # Remove the trailing colon
             continue
+        
+        # Handle bullet points format with description: url
+        if line.startswith('-') or line.startswith('*'):
+            line = line[1:].strip()
             
         # Pattern 1: Description: URL
         pattern1 = re.match(r'(.*?):\s*(https?://\S+)', line)
         # Pattern 2: Raw URL
         pattern2 = re.match(r'(https?://\S+)', line)
+        # Pattern 3: Description - URL (using dash instead of colon)
+        pattern3 = re.match(r'(.*?)\s+[-–]\s+(https?://\S+)', line)
         
         if pattern1:
             description, url = pattern1.groups()
+            entries.append({
+                'description': description.strip(),
+                'url': url.strip(),
+                'format': 'with_description',
+                'group': current_group
+            })
+        elif pattern3:
+            description, url = pattern3.groups()
             entries.append({
                 'description': description.strip(),
                 'url': url.strip(),
@@ -76,18 +90,31 @@ def fetch_missing_titles(entries, max_fetch=50):
     """Fetch titles for entries without descriptions (limit to prevent too many requests)"""
     count = 0
     for entry in entries:
-        if entry['format'] == 'raw_url' and not entry['description'] and count < max_fetch:
+        # Handle both raw URLs and entries with descriptions but need enhancing
+        if (entry['format'] == 'raw_url' and not entry['description']) or \
+           (entry['description'] and entry['description'].strip() == entry['url'].strip()):
             print(f"Fetching title for {entry['url']}...")
             title = get_page_title(entry['url'])
             if title:
                 entry['description'] = title
             else:
-                # Use domain as fallback description
-                domain = extract_domain(entry['url'])
-                if domain:
-                    entry['description'] = f"Link from {domain}"
+                # Extract repo name for GitHub links
+                if 'github.com' in entry['url']:
+                    # Extract the repository name and owner from github URLs
+                    parts = entry['url'].strip('/').split('/')
+                    if len(parts) >= 5:  # https://github.com/owner/repo
+                        owner = parts[-2]
+                        repo = parts[-1]
+                        entry['description'] = f"GitHub: {owner}/{repo}"
+                    else:
+                        entry['description'] = "GitHub Repository"
                 else:
-                    entry['description'] = "Unnamed resource"
+                    # Use domain as fallback description
+                    domain = extract_domain(entry['url'])
+                    if domain:
+                        entry['description'] = f"Link from {domain}"
+                    else:
+                        entry['description'] = "Unnamed resource"
             count += 1
             time.sleep(0.5)  # Be nice to servers
     
@@ -130,19 +157,58 @@ def extract_common_topics(entries):
     # Get entries without groups
     ungrouped = [e for e in entries if not e['group']]
     
-    # Extract domains for ungrouped entries
+    # SPECIAL CASES HANDLING
+    # Group github repos together
+    github_entries = [e for e in ungrouped if 'github.com' in e['url']]
+    api_entries = [e for e in ungrouped if any(kw in e['description'].lower() 
+                 for kw in ['api', 'swagger', 'openapi', 'rest', 'graphql', 'endpoint'])]
+    css_entries = [e for e in ungrouped if any(kw in e['description'].lower() 
+                 for kw in ['css', 'style', 'font', 'design', 'icon'])]
+    cloud_entries = [e for e in ungrouped if any(kw in e['description'].lower() 
+                   for kw in ['aws', 'ec2', 'cloud', 'azure', 'instance'])]
+    learning_entries = [e for e in ungrouped if any(kw in e['description'].lower() 
+                      for kw in ['learn', 'tutorial', 'course', 'education'])]
+    
+    # Create special groups
+    special_topics = {}
+    if github_entries:
+        special_topics["GitHub Repositories"] = github_entries
+    if api_entries:
+        special_topics["API Tools & Resources"] = api_entries
+    if css_entries:
+        special_topics["Web Design & CSS Resources"] = css_entries
+    if cloud_entries:
+        special_topics["Cloud & Infrastructure"] = cloud_entries
+    if learning_entries:
+        special_topics["Learning Resources"] = learning_entries
+    
+    # Remove entries that were added to special topics
+    special_entries_urls = set()
+    for entries_list in special_topics.values():
+        special_entries_urls.update([e['url'] for e in entries_list])
+    
+    ungrouped = [e for e in ungrouped if e['url'] not in special_entries_urls]
+    
+    # Extract domains for remaining ungrouped entries
     domains = [extract_domain(entry['url']) for entry in ungrouped if entry['url']]
     domain_counter = Counter([d for d in domains if d])
     
-    # Find the most common domains
-    common_domains = [domain for domain, count in domain_counter.most_common(5) if count > 1]
+    # Find the most common domains (more aggressive grouping)
+    common_domains = [domain for domain, count in domain_counter.most_common(10) if count > 1]
     
     # Dictionary to store domain groupings
     domain_topics = {}
     
     # Group by common domains
     for domain in common_domains:
-        domain_topics[f"Resources from {domain}"] = [
+        if 'github.com' in domain:
+            topic_name = "Additional GitHub Resources"
+        elif 'stackoverflow.com' in domain or 'superuser.com' in domain:
+            topic_name = "Stack Exchange Q&A Resources"
+        else:
+            topic_name = f"Resources from {domain}"
+            
+        domain_topics[topic_name] = [
             entry for entry in ungrouped 
             if extract_domain(entry['url']) == domain
         ]
@@ -153,8 +219,8 @@ def extract_common_topics(entries):
         if extract_domain(entry['url']) not in common_domains
     ]
     
-    # Combine existing groups with domain-based groups
-    all_groups = {**existing_groups, **domain_topics}
+    # Combine existing groups with special topics and domain-based groups
+    all_groups = {**existing_groups, **special_topics, **domain_topics}
     
     return all_groups, remaining_entries
 
@@ -255,14 +321,45 @@ def main():
         if remaining_entries:
             all_topics["Miscellaneous"] = remaining_entries
     
-    # 5. Output the results
+    # 5. Sort entries within each topic for consistent ordering
+    for topic, topic_entries in all_topics.items():
+        # Sort by description (if available) then by URL
+        all_topics[topic] = sorted(
+            topic_entries,
+            key=lambda e: (e['description'] or '').lower() or e['url'].lower()
+        )
+    
+    # Sort topics by name, but keep "Miscellaneous" at the end
+    sorted_topics = {}
+    misc_entries = all_topics.pop("Miscellaneous", [])
+    
+    # Sort topics alphabetically
+    for topic in sorted(all_topics.keys()):
+        sorted_topics[topic] = all_topics[topic]
+    
+    # Add miscellaneous at the end if it exists
+    if misc_entries:
+        sorted_topics["Miscellaneous"] = misc_entries
+    
+    # 6. Output the results with statistics
     with open('organized_links.md', 'w', encoding='utf-8') as f:
         f.write("# Organized Web Links\n\n")
+        f.write(f"*Total Links: {len(entries)} in {len(sorted_topics)} categories*\n\n")
+        f.write("## Table of Contents\n\n")
         
-        for topic, topic_entries in all_topics.items():
+        # Create a table of contents
+        for topic in sorted_topics.keys():
+            cleaned_topic = topic.replace('#', '').replace('*', '').replace('`', '')
+            topic_anchor = cleaned_topic.lower().replace(' ', '-').replace(',', '')
+            f.write(f"- [{cleaned_topic}](#{topic_anchor}) ({len(sorted_topics[topic])} links)\n")
+        
+        f.write("\n---\n\n")
+        
+        # Write each topic with its entries
+        for topic, topic_entries in sorted_topics.items():
             f.write(f"## {topic}\n\n")
             for entry in topic_entries:
-                if entry['description']:
+                if entry['description'] and entry['description'] != entry['url']:
                     f.write(f"- {entry['description']}: {entry['url']}\n")
                 else:
                     f.write(f"- {entry['url']}\n")
