@@ -179,11 +179,59 @@ class WebLinkOrganizer:
         """Process a chunk of entries for categorization."""
         categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
         categorized["Uncategorized"] = {"General": []}
-        
+
         for entry in entries:
-            # Existing categorization logic...
-            pass
-        
+            assigned = False
+            desc = (entry.description or '').lower()
+            url = entry.url.lower()
+
+            # First attempt: Try automatic categorization
+            for main_cat, config in self.hierarchy.items():
+                if any(keyword in desc or keyword in url for keyword in config['keywords']):
+                    # Try to find appropriate subcategory
+                    for subcat in config['subcategories']:
+                        if any(keyword in desc or keyword in url 
+                              for keyword in subcat.lower().split()):
+                            if subcat not in categorized[main_cat]:
+                                categorized[main_cat][subcat] = []
+                            categorized[main_cat][subcat].append(entry)
+                            assigned = True
+                            break
+                    
+                    if not assigned:
+                        # Put in "Other" subcategory
+                        other_cat = f"Other {main_cat}"
+                        if other_cat not in categorized[main_cat]:
+                            categorized[main_cat][other_cat] = []
+                        categorized[main_cat][other_cat].append(entry)
+                        assigned = True
+                    break
+
+            # Second attempt: Use original group if automatic categorization failed
+            if not assigned and entry.group:
+                group = entry.group
+                # Check if this group matches any main category
+                for main_cat in self.hierarchy.keys():
+                    if main_cat.lower() == group.lower():
+                        if "General" not in categorized[main_cat]:
+                            categorized[main_cat]["General"] = []
+                        categorized[main_cat]["General"].append(entry)
+                        assigned = True
+                        break
+
+                # If not a main category, create it as a new top-level category
+                if not assigned:
+                    if group not in categorized:
+                        categorized[group] = {}
+                    if "General" not in categorized[group]:
+                        categorized[group]["General"] = []
+                    categorized[group]["General"].append(entry)
+                    assigned = True
+
+            # Last resort: Uncategorized
+            if not assigned:
+                categorized["Uncategorized"]["General"].append(entry)
+
         return categorized
 
     @staticmethod
@@ -516,27 +564,70 @@ class WebLinkOrganizer:
 
     def categorize_entries_parallel(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """Categorize entries using parallel processing."""
+        if not entries:
+            return {"Uncategorized": {"General": []}}
+        
         # Determine optimal chunk size based on number of entries
         chunk_size = max(10, len(entries) // (os.cpu_count() or 1))
         chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
         
         # Process chunks in parallel
+        categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
+        categorized["Uncategorized"] = {"General": []}
+        
+        # If there's only one chunk, process it directly
+        if len(chunks) == 1:
+            return self._categorize_chunk(entries)
+        
+        # Process chunks in parallel
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = [executor.submit(self._categorize_chunk, chunk) for chunk in chunks]
-            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+            chunk_results = list(executor.map(self._categorize_chunk, chunks))
         
         # Merge results
-        final_categories = {main_cat: {} for main_cat in self.hierarchy.keys()}
-        final_categories["Uncategorized"] = {"General": []}
-        
-        for result in results:
+        for result in chunk_results:
             for main_cat, subcats in result.items():
+                if main_cat not in categorized:
+                    categorized[main_cat] = {}
                 for subcat, entries in subcats.items():
-                    if subcat not in final_categories[main_cat]:
-                        final_categories[main_cat][subcat] = []
-                    final_categories[main_cat][subcat].extend(entries)
+                    if subcat not in categorized[main_cat]:
+                        categorized[main_cat][subcat] = []
+                    categorized[main_cat][subcat].extend(entries)
         
-        return final_categories
+        # Sort entries within each subcategory
+        for main_cat in categorized:
+            for subcat in categorized[main_cat]:
+                categorized[main_cat][subcat].sort(
+                    key=lambda e: (
+                        e.description.lower() if e.description else e.url.lower(),
+                        e.url.lower()
+                    )
+                )
+        
+        # Create final sorted structure
+        filtered_categories = {}
+        main_cats = sorted([cat for cat in categorized.keys() if cat != "Uncategorized"])
+        if "Uncategorized" in categorized:
+            main_cats.append("Uncategorized")
+        
+        for main_cat in main_cats:
+            if any(entries for entries in categorized[main_cat].values()):
+                filtered_subcats = {
+                    subcat: entries 
+                    for subcat, entries in sorted(
+                        categorized[main_cat].items(),
+                        key=lambda x: (
+                            0 if x[0] == "General" else 
+                            2 if x[0].startswith("Other") else 
+                            1,
+                            x[0].lower()
+                        )
+                    )
+                    if entries
+                }
+                if filtered_subcats:
+                    filtered_categories[main_cat] = filtered_subcats
+        
+        return filtered_categories
 
     def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], invalid_links: List[WebLink], output_file: str):
         """Write organized links to markdown file with sorted categories and entries, including invalid links section."""
@@ -773,7 +864,7 @@ async def main():
         
         # Categorize entries using parallel processing
         logger.info("Categorizing entries...")
-        categories = organizer.categorize_entries_parallel(valid_entries)
+        categories = organizer.categorize_entries(valid_entries)
         
         # Write output including invalid links section
         logger.info(f"Writing organized links to {args.output}...")
