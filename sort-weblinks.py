@@ -177,6 +177,8 @@ class WebLinkOrganizer:
 
     def _categorize_chunk(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """Process a chunk of entries for categorization."""
+        logger = logging.getLogger(__name__)
+        
         # Initialize categories including custom ones from entries
         categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
         custom_categories = {
@@ -192,40 +194,18 @@ class WebLinkOrganizer:
 
         for entry in entries:
             if entry.url in assigned_urls:
+                logger.debug(f"\nSkipping duplicate URL: {entry.url}")
                 continue
                 
             desc = (entry.description or '').lower()
             url = entry.url.lower()
             
-            # Debug logging for categorization
-            logger.debug(f"\nCategorizing: {entry.url}")
-            logger.debug(f"Original group: {entry.group}")
+            logger.debug(f"\n{'='*50}")
+            logger.debug(f"Processing URL: {entry.url}")
             logger.debug(f"Description: {entry.description}")
-                
-            assigned = False
-            desc = (entry.description or '').lower()
-            url = entry.url.lower()
+            logger.debug(f"Original group: {entry.group}")
             
-            # Calculate relevance scores for each category, and log category scores
-            category_scores = {}
-            for main_cat, config in self.hierarchy.items():
-                score = 0
-                matching_keywords = []
-                
-                for keyword in config['keywords']:
-                    if keyword in url:
-                        score += 3
-                        matching_keywords.append(f"{keyword}(url)")
-                    if keyword in desc:
-                        score += 2
-                        matching_keywords.append(f"{keyword}(desc)")
-                
-                if score > 0:
-                    category_scores[main_cat] = {
-                        'score': score,
-                        'keywords': matching_keywords
-                    }
-                    logger.debug(f"Category '{main_cat}' score: {score} (keywords: {', '.join(matching_keywords)})")
+            assigned = False
             
             # First: Use original group if it exists
             if entry.group:
@@ -236,76 +216,64 @@ class WebLinkOrganizer:
                     categorized[group]["General"].append(entry)
                     assigned_urls.add(entry.url)
                     assigned = True
-                    continue  # Skip automatic categorization if manually categorized
+                    logger.debug(f"Assigned to original group: {group}")
+                    continue
 
-            # Second: Try automatic categorization if not assigned
-            if not assigned:
-                # Calculate relevance scores for each category
-                for main_cat, config in self.hierarchy.items():
-                    score = 0
-                    # Check keywords in URL and description
-                    for keyword in config['keywords']:
-                        if keyword in url:
-                            score += 3  # Higher weight for URL matches
-                        if keyword in desc:
-                            score += 2  # Medium weight for description matches
-                    
-                    # Check subcategory keywords
-                    for subcat in config['subcategories']:
-                        subcat_words = subcat.lower().split()
-                        for word in subcat_words:
-                            if word in url:
-                                score += 2
-                            if word in desc:
-                                score += 1
-                    
-                    if score > 0:
-                        category_scores[main_cat] = score
+            # Calculate scores for all categories
+            category_scores = {}
+            logger.debug("\nCategory scoring:")
+            for main_cat, config in self.hierarchy.items():
+                score, keywords = self.calculate_category_score(url, desc, config)
+                if score >= self.config['settings']['categorization']['min_score_threshold']:
+                    category_scores[main_cat] = {
+                        'score': score,
+                        'keywords': keywords
+                    }
+                    logger.debug(f"- {main_cat}: score={score}, keywords={', '.join(keywords)}")
 
-                # Assign to category with highest relevance score
-                if category_scores:
-                    best_category = max(category_scores.items(), key=lambda x: x[1])[0]
-                    best_score = category_scores[best_category]
+            if category_scores:
+                # Get best category
+                best_category = max(category_scores.items(), key=lambda x: x[1]['score'])[0]
+                logger.debug(f"\nBest matching category: {best_category}")
+                
+                # Find best subcategory
+                best_subcat = None
+                best_subcat_score = 0
+                
+                logger.debug("\nSubcategory scoring:")
+                for subcat in self.hierarchy[best_category]['subcategories']:
+                    subcat_score, subcat_keywords = self.calculate_category_score(
+                        url, desc, 
+                        {'keywords': {'primary': self.hierarchy[best_category]['subcategories'][subcat]['keywords']}}
+                    )
                     
-                    # Only categorize if score is above threshold
-                    if best_score >= 3:  # Adjust threshold as needed
-                        config = self.hierarchy[best_category]
-                        
-                        # Find best matching subcategory
-                        best_subcat = None
-                        best_subcat_score = 0
-                        
-                        for subcat in config['subcategories']:
-                            subcat_score = 0
-                            subcat_words = subcat.lower().split()
-                            for word in subcat_words:
-                                if word in url:
-                                    subcat_score += 2
-                                if word in desc:
-                                    subcat_score += 1
-                            
-                            if subcat_score > best_subcat_score:
-                                best_subcat_score = subcat_score
-                                best_subcat = subcat
-                        
-                        if best_subcat_score > 0:
-                            if best_subcat not in categorized[best_category]:
-                                categorized[best_category][best_subcat] = []
-                            categorized[best_category][best_subcat].append(entry)
-                        else:
-                            # Use "Other" subcategory if no good subcategory match
-                            other_cat = f"Other {best_category}"
-                            if other_cat not in categorized[best_category]:
-                                categorized[best_category][other_cat] = []
-                            categorized[best_category][other_cat].append(entry)
-                        
-                        assigned_urls.add(entry.url)
-                        assigned = True
+                    logger.debug(f"- {subcat}: score={subcat_score}, keywords={', '.join(subcat_keywords)}")
+                    
+                    if subcat_score > best_subcat_score:
+                        best_subcat_score = subcat_score
+                        best_subcat = subcat
+
+                # Assign to category/subcategory
+                if best_subcat:
+                    if best_subcat not in categorized[best_category]:
+                        categorized[best_category][best_subcat] = []
+                    categorized[best_category][best_subcat].append(entry)
+                    logger.debug(f"\nAssigned to: {best_category}/{best_subcat}")
+                else:
+                    other_cat = f"Other {best_category}"
+                    if other_cat not in categorized[best_category]:
+                        categorized[best_category][other_cat] = []
+                    categorized[best_category][other_cat].append(entry)
+                    logger.debug(f"\nAssigned to: {best_category}/{other_cat}")
+                
+                assigned_urls.add(entry.url)
+                continue
 
             # Last resort: Uncategorized
             if not assigned:
                 categorized["Uncategorized"]["General"].append(entry)
                 assigned_urls.add(entry.url)
+                logger.debug("\nNo category found, assigned to: Uncategorized/General")
 
         return categorized
 
@@ -824,7 +792,7 @@ class WebLinkOrganizer:
 
             # Add invalid links section at the end
             if invalid_links:
-                f.write("\n## Links Not Working\n\n")
+                f.write("## Links Not Working\n\n")
                 for entry in sorted(invalid_links, key=lambda e: (e.description or '').lower() or e.url.lower()):
                     if entry.description and entry.description != entry.url:
                         f.write(f"- {entry.description}: {entry.url}\n")
@@ -929,16 +897,39 @@ def parse_args():
     )
     return parser.parse_args()
 
+def setup_logging(debug: bool, log_file: str = "categorization.log"):
+    """Setup logging configuration to output to both file and console."""
+    log_level = logging.DEBUG if debug else logging.INFO
+    
+    # Create formatters for console and file
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Setup file handler
+    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)  # Always log debug to file
+    file_handler.setFormatter(formatter)
+    
+    # Setup console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    
+    # Setup root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Capture all levels
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    return root_logger
+
 async def main():
     """Enhanced main function with async support and progress tracking, including URL validation and parallel processing."""
     args = parse_args()
     
-    # Configure logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    # Setup & configure logging
+    logger = setup_logging(args.debug)
+    logger.info(f"Starting weblinks organizer at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    logger.info(f"User: {os.getlogin()}")
     
     try:
         # Initialize organizer
@@ -967,7 +958,7 @@ async def main():
         
         # Categorize entries
         logger.info("Categorizing entries...")
-        if len(valid_entries) >= 1000:  # Use parallel processing for larger sets
+        if len(valid_entries) >= 5000:  # Use parallel processing for larger sets
             logger.info("Using parallel processing for categorization...")
             categories = organizer.categorize_entries_parallel(valid_entries)
         else:
@@ -980,12 +971,12 @@ async def main():
             for entries in cat.values()
         )
         logger.info(f"""Link Processing Summary:
-          Initial links found: {initial_count}
-          Unique URLs: {unique_urls}
-          Valid links: {len(valid_entries)}
-          Invalid links: {len(invalid_entries)}
-          Categorized links: {categorized_count}
-          Links in final output: {categorized_count + len(invalid_entries)}
+        Initial links found: {initial_count}
+        Unique URLs: {unique_urls}
+        Valid links: {len(valid_entries)}
+        Invalid links: {len(invalid_entries)}
+        Categorized links: {categorized_count}
+        Links in final output: {categorized_count + len(invalid_entries)}
         """)
         
         # Write output including invalid links section

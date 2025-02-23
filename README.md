@@ -228,6 +228,14 @@ The error occurred because the default configuration in the original code didn't
 - Provide detailed categorization logging
 - Help identify why links might be miscategorized
 
+Logging enhancements, adding a 'setup_logging' function:
+
+- It handles both file and console output
+- It provides more control over log formatting
+- It allows different log levels for file and console
+- It creates a new log file for each run
+- It properly handles Unicode characters in the log
+
 Output:
 
 - Show subcategories only when there are multiple subcategories
