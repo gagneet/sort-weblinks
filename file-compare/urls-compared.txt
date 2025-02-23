@@ -1,0 +1,50 @@
+Total URLs in Unsorted File: 3690
+Total URLs in Sorted File: 3667
+Common URLs: 3658
+URLs only in Unsorted File: 32
+URLs only in Sorted File: 9
+
+URLs only in Unsorted File:
+https://4.240.78.192/admin#mail-guide
+https://864020530941.signin.aws.amazon.com/console
+https://app.mdaoperator.com.au/hangfire/backjobs/jobs/enqueued
+https://blog.testlodge.com/writing-test-cases-from-user-stories-acceptance-criteria/
+https://dev250135.service-now.com
+https://devblogs.microsoft.com/devops/pipeline-shared-infrastructure/
+https://devblogs.microsoft.com/premier-developer/deploying-react-apps-to-azure-with-azure-devops/
+https://devblogs.microsoft.com/visualstudio/bridge-to-kubernetes-ga/
+https://gagneet.my.webex.com/meet/gagneet
+https://github.com/acantril/learn-cantrill-io-labs
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/00-aws-simple-demos/aws-lambda-s3-events
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-client-vpn
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-codepipeline-catpipeline
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-cognito-web-identity-federation
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-dms-database-migration
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-elastic-wordpress-evolution
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-hybrid-bgpvpn
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-hybrid-dns
+https://github.com/acantril/learn-cantrill-io-labs/tree/master/aws-serverless-pet-cuddle-o-tron
+https://github.com/makinhs/rest-api-tutorial
+https://github.com/twilio/video-quickstart-js
+https://medium.com/@coorasse/moving-to-dev-to-b0442a724629
+https://octopus.com/docs/deployment-targets/ssh-targets
+https://psychology.org.au/for-the-public/psychology-topics/trauma
+https://uat-aws.mdaoperator.com.au/hangfire/backjobs/jobs/enqueued
+https://www.airbnb.com/d/countrypubs
+https://www.apsc.gov.au/working-aps/aps-employees-and-managers/classifications/integrated-leadership-system-ils/ils-resources-profiles-comparatives-and-self-assessment/integrated-leadership-system-ils-el1-profile
+https://www.apsc.gov.au/working-aps/joining-aps/cracking-code
+https://www.arystonwebsolution.com/blog/2020/02/20/key-considerations-that-a-healthcare-mobile-app-developer-must-keep-in-mind/
+https://www.asd.gov.au/careers/career-opportunities/career-quiz/results/full_part_time,%20non_ongoing_contract/26,27,28,30,31,33,36,41,42,43,47,48,49,56,57,58
+https://www.selenium.dev/documentation/en/
+https://www.twilio.com/console/sms/project/api-keys/ske8eac7aeb7e5bd585347383855ef5614
+
+URLs only in Sorted File:
+https://cointelegraph.com/news/six-tools-used-by-hackers-to-steal-cryptocurrency-how-to-protect-wallets
+https://dev.to.
+https://octopus.com/docs/infrastructure/deployment-targets/linux/ssh-target:
+https://walletverse.io/how-can-someone-hack-your-crypto-wallet/
+https://www.coindesk.com/consensus-magazine/2023/06/22/social-engineering-ice-phishing-and-more-how-scammers-can-drain-your-crypto-wallet
+https://www.reddit.com/r/cryptocurrency/comments/qtjsu0/can_someone_hack_you_just_by_knowing_your_wallet/
+https://www.selenium.dev/documentation/:
+https://www.toptal.com/nodejs/secure-rest-api-in-nodejs:
+https://www.twilio.com/docs/video:
