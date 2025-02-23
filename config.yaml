@@ -85,3 +85,6 @@ settings:
   max_retries: 3
   concurrent_requests: 10
   cache_duration: 86400  # 24 hours
+  fetch_titles: true
+  min_cluster_size: 2
+  clustering_threshold: 0.7

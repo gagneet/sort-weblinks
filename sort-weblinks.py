@@ -453,8 +453,32 @@ class WebLinkOrganizer:
 
             return filtered_categories
 
-    def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], output_file: str):
-        """Write organized links to markdown file with sorted categories and entries."""
+    def categorize_entries_parallel(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
+        """Categorize entries using parallel processing."""
+        # Determine optimal chunk size based on number of entries
+        chunk_size = max(10, len(entries) // (os.cpu_count() or 1))
+        chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
+        
+        # Process chunks in parallel
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = [executor.submit(self._categorize_chunk, chunk) for chunk in chunks]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+        
+        # Merge results
+        final_categories = {main_cat: {} for main_cat in self.hierarchy.keys()}
+        final_categories["Uncategorized"] = {"General": []}
+        
+        for result in results:
+            for main_cat, subcats in result.items():
+                for subcat, entries in subcats.items():
+                    if subcat not in final_categories[main_cat]:
+                        final_categories[main_cat][subcat] = []
+                    final_categories[main_cat][subcat].extend(entries)
+        
+        return final_categories
+
+    def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], invalid_links: List[WebLink], output_file: str):
+        """Write organized links to markdown file with sorted categories and entries, including invalid links section."""
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write header with metadata
             total_links = sum(
@@ -545,6 +569,17 @@ class WebLinkOrganizer:
                         else:
                             f.write(f"- {entry.url}\n")
                     
+                    f.write("\n")
+
+            # Add invalid links section at the end if there are any
+            if invalid_links:
+                f.write("\n# Links Not Working\n\n")
+                for entry in sorted(invalid_links, key=lambda e: (e.description or '').lower() or e.url.lower()):
+                    if entry.description and entry.description != entry.url:
+                        f.write(f"- {entry.description}: {entry.url}\n")
+                    else:
+                        f.write(f"- {entry.url}\n")
+      
                     f.write("\n")
 
     @staticmethod
@@ -645,7 +680,7 @@ def parse_args():
     return parser.parse_args()
 
 async def main():
-    """Main function with async support and progress tracking."""
+    """Enhanced main function with async support and progress tracking, including URL validation and parallel processing."""
     args = parse_args()
     
     # Configure logging
@@ -665,18 +700,23 @@ async def main():
         entries = organizer.parse_links(args.input)
         logger.info(f"Found {len(entries)} links")
         
-        # Fetch missing titles
+        # Validate URLs
+        logger.info("Validating URLs...")
+        valid_entries, invalid_entries = await organizer.validate_all_links(entries)
+        logger.info(f"Found {len(valid_entries)} valid and {len(invalid_entries)} invalid links")
+        
+        # Fetch missing titles for valid links
         if not args.no_cache:
             logger.info("Fetching missing titles...")
-            entries = await organizer.fetch_missing_titles(entries)
+            valid_entries = await organizer.fetch_missing_titles(valid_entries)
         
-        # Categorize entries
+        # Categorize entries using parallel processing
         logger.info("Categorizing entries...")
-        categories = organizer.categorize_entries(entries)
+        categories = organizer.categorize_entries_parallel(valid_entries)
         
-        # Write output
+        # Write output including invalid links section
         logger.info(f"Writing organized links to {args.output}...")
-        organizer.write_markdown(categories, args.output)
+        organizer.write_markdown(categories, invalid_entries, args.output)
         
         logger.info("Done!")
         
