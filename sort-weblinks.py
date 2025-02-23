@@ -1,4 +1,6 @@
 import re
+import sys
+import os
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
@@ -24,7 +26,7 @@ import time
 from datetime import datetime, UTC  # Add UTC import at the top of the file
 import argparse
 from tqdm import tqdm
-import sys
+
 
 # Configure logging
 logging.basicConfig(
@@ -67,10 +69,15 @@ class URLValidator:
         except:
             return url, False
 
-    async def validate_urls_batch(self, urls: Set[str]) -> dict:
+    async def validate_urls_batch(self, urls: Set[str], pbar: Optional[tqdm] = None) -> dict:
         """Validate a batch of URLs concurrently."""
         tasks = [self.check_url_validity(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Update progress bar if provided
+        if pbar is not None:
+            pbar.update(len(urls))
+            
         return {url: valid for url, valid in results if not isinstance(valid, Exception)}
 
 
@@ -92,26 +99,42 @@ class WebLinkOrganizer:
     async def validate_all_links(self, entries: List[WebLink]) -> Tuple[List[WebLink], List[WebLink]]:
         """Validate all URLs and separate valid from invalid links."""
         unique_urls = {entry.url for entry in entries}
+        total_urls = len(unique_urls)
         
-        # Process URLs in batches
-        batch_size = 50
-        url_batches = [list(unique_urls)[i:i + batch_size] 
-                      for i in range(0, len(unique_urls), batch_size)]
+        # Create progress bar for URL validation
+        with tqdm(total=total_urls, 
+                 desc="Validating URLs", 
+                 unit="url",
+                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} URLs [{elapsed}<{remaining}]') as pbar:
+            
+            # Process URLs in batches
+            batch_size = 50
+            url_batches = [list(unique_urls)[i:i + batch_size] 
+                          for i in range(0, len(unique_urls), batch_size)]
+            
+            validity_map = {}
+            for batch in url_batches:
+                batch_results = await self.url_validator.validate_urls_batch(set(batch), pbar)
+                validity_map.update(batch_results)
+            
+            # Create secondary progress bar for processing entries
+            with tqdm(total=len(entries), 
+                     desc="Processing entries", 
+                     unit="entry",
+                     leave=False) as entry_pbar:
+                
+                valid_entries = []
+                invalid_entries = []
+                
+                for entry in entries:
+                    if validity_map.get(entry.url, False):
+                        valid_entries.append(entry)
+                    else:
+                        invalid_entries.append(entry)
+                    entry_pbar.update(1)
         
-        validity_map = {}
-        for batch in url_batches:
-            batch_results = await self.url_validator.validate_urls_batch(set(batch))
-            validity_map.update(batch_results)
-        
-        valid_entries = []
-        invalid_entries = []
-        
-        for entry in entries:
-            if validity_map.get(entry.url, False):
-                valid_entries.append(entry)
-            else:
-                invalid_entries.append(entry)
-        
+        # Print summary
+        logger.info(f"Validation complete: {len(valid_entries)} valid, {len(invalid_entries)} invalid URLs")
         return valid_entries, invalid_entries
 
     def _categorize_chunk(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
