@@ -41,6 +41,14 @@ Also remember, we can always use the --debug flag if we need to troubleshoot any
 python weblinks_organizer.py -i weblinks.txt -o organized.md -c config.yaml --debug
 ```
 
+Added a log file generation for the categorization.
+
+```bash
+python weblinks_organizer.py -i weblinks.txt -o organized.md -c config.yaml --debug > categorization.log
+```
+
+Now we can then analyze `categorization.log` to see why specific links are being categorized incorrectly and adjust the keywords and scoring system in `config.yaml` accordingly.
+
 ## Caching and re-use of the URL descriptions
 
 The `url_cache.json` file is designed to be reused across multiple runs of the script. It caches the titles and timestamps of URLs that have been fetched, which helps:
@@ -171,6 +179,14 @@ I've improved the categorization with:
 - More aggressive domain-based grouping to reduce the "Miscellaneous" category
 - Special handling for Stack Exchange sites (Stack Overflow, Super User)
 
+##### Categorization Logic
+
+The categorization is done in this order:
+
+- First tries to use original group from input file
+- Then attempts automatic categorization based on keywords
+- Falls back to "Uncategorized" if no match
+
 #### c. Link Sorting & Organization
 
 The output is now much more organized:
@@ -207,6 +223,10 @@ The error occurred because the default configuration in the original code didn't
 - Added only_general check to identify categories with just a "General" subcategory
 - Skip writing "### General" when it's the only subcategory
 - Skip showing subcategories in TOC when there's only "General"
+- Restore generic descriptions for URLs
+- Show exactly where links are being filtered out
+- Provide detailed categorization logging
+- Help identify why links might be miscategorized
 
 Output:
 
@@ -375,4 +395,3 @@ Feature Enhancements:
 - Implement URL validation and cleanup
 - Add support for relative dates in output
 - Add sorting options for links within categories
-
