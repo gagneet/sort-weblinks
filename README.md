@@ -1,5 +1,14 @@
 # Sorting out web-links and arranging them according to category and relevance
 
+## Table of Contents
+
+- [**Introduction**](#introduction)
+- [**Running the application**](#running-the-application)
+- [**Improvements and debugging**](#improvements-and-debugging)
+- [**Caching and re-use of the URL descriptions**](#caching-and-re-use-of-the-url-descriptions)
+- [**Issues and Error solutions**](#issues-and-error-solutions)
+- [**Updates and key changes**](#updates-and-key-changes)
+
 ## Introduction
 
 I have a lot of links which I have been saving and just putting into a file called my-weblinks.txt
