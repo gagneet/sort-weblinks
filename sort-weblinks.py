@@ -194,12 +194,38 @@ class WebLinkOrganizer:
             if entry.url in assigned_urls:
                 continue
                 
+            desc = (entry.description or '').lower()
+            url = entry.url.lower()
+            
+            # Debug logging for categorization
+            logger.debug(f"\nCategorizing: {entry.url}")
+            logger.debug(f"Original group: {entry.group}")
+            logger.debug(f"Description: {entry.description}")
+                
             assigned = False
             desc = (entry.description or '').lower()
             url = entry.url.lower()
             
-            # Calculate relevance scores for each category
+            # Calculate relevance scores for each category, and log category scores
             category_scores = {}
+            for main_cat, config in self.hierarchy.items():
+                score = 0
+                matching_keywords = []
+                
+                for keyword in config['keywords']:
+                    if keyword in url:
+                        score += 3
+                        matching_keywords.append(f"{keyword}(url)")
+                    if keyword in desc:
+                        score += 2
+                        matching_keywords.append(f"{keyword}(desc)")
+                
+                if score > 0:
+                    category_scores[main_cat] = {
+                        'score': score,
+                        'keywords': matching_keywords
+                    }
+                    logger.debug(f"Category '{main_cat}' score: {score} (keywords: {', '.join(matching_keywords)})")
             
             # First: Use original group if it exists
             if entry.group:
