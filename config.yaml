@@ -1,0 +1,87 @@
+# Category hierarchy configuration
+categories:
+  Development Resources:
+    subcategories:
+      - GitHub Repositories
+      - API Documentation
+      - Development Tools
+      - Code Libraries
+      - Stack Exchange Resources
+    keywords:
+      - github
+      - api
+      - code
+      - dev
+      - sdk
+      - library
+      - framework
+      - stack
+      - overflow
+      - git
+      - repo
+
+  Web Development:
+    subcategories:
+      - Frontend Frameworks
+      - CSS Resources
+      - JavaScript Libraries
+      - Web Design Tools
+      - UI/UX Resources
+    keywords:
+      - css
+      - html
+      - javascript
+      - js
+      - web
+      - frontend
+      - react
+      - vue
+      - angular
+      - design
+      - ui
+      - ux
+
+  DevOps & Infrastructure:
+    subcategories:
+      - Cloud Services
+      - Deployment Tools
+      - Monitoring Solutions
+      - Container Resources
+      - CI/CD Tools
+    keywords:
+      - cloud
+      - aws
+      - azure
+      - gcp
+      - docker
+      - kubernetes
+      - devops
+      - ci/cd
+      - pipeline
+      - infrastructure
+
+  Learning Resources:
+    subcategories:
+      - Tutorials
+      - Online Courses
+      - Documentation
+      - Learning Platforms
+      - Educational Resources
+    keywords:
+      - learn
+      - tutorial
+      - course
+      - education
+      - training
+      - doc
+      - guide
+      - how-to
+      - lesson
+      - educational
+
+# General settings
+settings:
+  timeout: 5
+  max_retries: 3
+  concurrent_requests: 10
+  cache_duration: 86400  # 24 hours
