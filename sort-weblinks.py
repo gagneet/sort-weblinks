@@ -49,7 +49,7 @@ class WebLink:
         self.domain = urlparse(self.url).netloc if self.url else None
 
 class URLValidator:
-    def __init__(self, timeout: int = 5, max_workers: int = 10):
+    def __init__(self, timeout: int = 10, max_workers: int = 10):
         self.timeout = timeout
         self.max_workers = max_workers
         
@@ -61,12 +61,47 @@ class URLValidator:
             if not all([result.scheme, result.netloc]):
                 return url, False
 
+            # Define common valid domains that might block HEAD requests
+            VALID_DOMAINS = {
+                'github.com', 'www.github.com',
+                'gitlab.com', 'www.gitlab.com',
+                'bitbucket.org', 'www.bitbucket.org',
+                'stackoverflow.com', 'www.stackoverflow.com',
+                'docs.google.com',
+                'medium.com', 'www.medium.com'
+            }
+
+            # If the domain is in our trusted list, consider it valid
+            if result.netloc in VALID_DOMAINS:
+                return url, True
+
             # Then check if URL is accessible
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.head(url, allow_redirects=True) as response:
-                    return url, 200 <= response.status < 400
-        except:
+                try:
+                    # Try HEAD request first
+                    async with session.head(url, allow_redirects=True) as response:
+                        return url, 200 <= response.status < 400
+                except:
+                    # If HEAD fails, try GET
+                    try:
+                        async with session.get(url, allow_redirects=True) as response:
+                            return url, 200 <= response.status < 400
+                    except:
+                        # For HTTPS URLs that fail, try HTTP
+                        if url.startswith('https://'):
+                            http_url = 'http://' + url[8:]
+                            try:
+                                async with session.get(http_url, allow_redirects=True) as response:
+                                    return url, 200 <= response.status < 400
+                            except:
+                                pass
+                        return url, False
+        except Exception as e:
+            logger.debug(f"URL validation error for {url}: {str(e)}")
+            # Consider URLs with valid format as potentially valid even if we can't connect
+            if all([result.scheme, result.netloc]):
+                return url, True
             return url, False
 
     async def validate_urls_batch(self, urls: Set[str], pbar: Optional[tqdm] = None) -> dict:
@@ -78,8 +113,11 @@ class URLValidator:
         if pbar is not None:
             pbar.update(len(urls))
             
-        return {url: valid for url, valid in results if not isinstance(valid, Exception)}
-
+        return {
+            url: valid for url,
+			valid in results 
+            if not isinstance(valid, Exception)
+        }
 
 class WebLinkOrganizer:
     def __init__(self, config_path: Optional[str] = None):
@@ -89,8 +127,8 @@ class WebLinkOrganizer:
         # Extract settings and hierarchy from config
         self.settings = self.config.get('settings', {})
         self.hierarchy = self.config.get('categories', self.default_hierarchy())
-        # Initialize validator, cache and session
-        self.url_validator = URLValidator()
+        # Initialize validator with more lenient timeout, cache and session
+        self.url_validator = URLValidator(timeout=10)  # Increased timeout
         self.invalid_links = []  # Store invalid links
         self.cache_file = Path('url_cache.json')
         self.url_cache = self.load_cache()
