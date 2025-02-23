@@ -19,6 +19,7 @@ from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 import requests
 import time
+from datetime import datetime, UTC  # Add UTC import at the top of the file
 import argparse
 from tqdm import tqdm
 import sys
@@ -45,40 +46,21 @@ class WebLink:
 
 class WebLinkOrganizer:
     def __init__(self, config_path: Optional[str] = None):
+        """Initialize the WebLinkOrganizer with configuration."""
+        # First load the configuration
         self.config = self.load_config(config_path)
-        self.session = self.create_session()
+        # Extract settings and hierarchy from config
+        self.settings = self.config.get('settings', {})
+        self.hierarchy = self.config.get('categories', self.default_hierarchy())
+        # Initialize cache and session
         self.cache_file = Path('url_cache.json')
         self.url_cache = self.load_cache()
-        self.hierarchy = self.config.get('categories', self.default_hierarchy())
-        self.settings = self.config.get('settings', {})
+        self.session = self.create_session()
 
     @staticmethod
     def load_config(config_path: Optional[str]) -> dict:
         """Load configuration from YAML file or use defaults."""
         default_config = {
-            'timeout': 5,
-            'max_retries': 3,
-            'concurrent_requests': 10,
-            'cache_duration': 86400,  # 24 hours
-            'custom_categories': {}
-        }
-        
-        if config_path:
-            try:
-                config_path = Path(config_path)
-                if config_path.exists():
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        config = yaml.safe_load(f)
-                        if not config:
-                            raise ValueError("Empty configuration file")
-                        return config
-                else:
-                    logger.warning(f"Config file not found: {config_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load config file: {e}")
-        
-        logger.info("Using default configuration")
-        return {
             'settings': {
                 'timeout': 5,
                 'max_retries': 3,
@@ -90,12 +72,39 @@ class WebLinkOrganizer:
             },
             'categories': WebLinkOrganizer.default_hierarchy()
         }
+        
+        if config_path:
+            try:
+                config_path = Path(config_path)
+                if config_path.exists():
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        loaded_config = yaml.safe_load(f)
+                        if not loaded_config:
+                            logger.warning("Empty configuration file, using defaults")
+                            return default_config
+                        
+                        # Merge with defaults to ensure all required settings exist
+                        merged_config = {
+                            'settings': {**default_config['settings'], **loaded_config.get('settings', {})},
+                            'categories': loaded_config.get('categories', default_config['categories'])
+                        }
+                        return merged_config
+                else:
+                    logger.warning(f"Config file not found: {config_path}")
+                    return default_config
+            except Exception as e:
+                logger.warning(f"Failed to load config file: {e}")
+                return default_config
+        
+        logger.info("Using default configuration")
+        return default_config
 
     def create_session(self) -> requests.Session:
         """Create a requests session with retry logic."""
         session = requests.Session()
+        max_retries = self.settings.get('max_retries', 3)
         retries = Retry(
-            total=self.settings.get('max_retries', 3),
+            total=max_retries,
             backoff_factor=0.5,
             status_forcelist=[500, 502, 503, 504]
         )
@@ -347,7 +356,8 @@ class WebLinkOrganizer:
             total_subcats = sum(len(subcats) for subcats in categories.values())
             
             f.write("# Organized Web Links\n\n")
-            f.write(f"*Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC*\n")
+            # Use datetime.now(UTC) instead of datetime.utcnow()
+            f.write(f"*Generated on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC*\n")
             f.write(f"*Total Links: {total_links} in {total_subcats} subcategories*\n\n")
             
             # Table of Contents
