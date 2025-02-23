@@ -15,6 +15,8 @@ import logging
 from pathlib import Path
 import json
 import concurrent.futures
+from typing import List, Tuple, Set
+from urllib.parse import urlparse
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 import requests
@@ -44,6 +46,34 @@ class WebLink:
     def __post_init__(self):
         self.domain = urlparse(self.url).netloc if self.url else None
 
+class URLValidator:
+    def __init__(self, timeout: int = 5, max_workers: int = 10):
+        self.timeout = timeout
+        self.max_workers = max_workers
+        
+    async def check_url_validity(self, url: str) -> Tuple[str, bool]:
+        """Check if a URL is valid and accessible."""
+        try:
+            # First validate URL format
+            result = urlparse(url)
+            if not all([result.scheme, result.netloc]):
+                return url, False
+
+            # Then check if URL is accessible
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.head(url, allow_redirects=True) as response:
+                    return url, 200 <= response.status < 400
+        except:
+            return url, False
+
+    async def validate_urls_batch(self, urls: Set[str]) -> dict:
+        """Validate a batch of URLs concurrently."""
+        tasks = [self.check_url_validity(url) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return {url: valid for url, valid in results if not isinstance(valid, Exception)}
+
+
 class WebLinkOrganizer:
     def __init__(self, config_path: Optional[str] = None):
         """Initialize the WebLinkOrganizer with configuration."""
@@ -52,10 +82,48 @@ class WebLinkOrganizer:
         # Extract settings and hierarchy from config
         self.settings = self.config.get('settings', {})
         self.hierarchy = self.config.get('categories', self.default_hierarchy())
-        # Initialize cache and session
+        # Initialize validator, cache and session
+        self.url_validator = URLValidator()
+        self.invalid_links = []  # Store invalid links
         self.cache_file = Path('url_cache.json')
         self.url_cache = self.load_cache()
         self.session = self.create_session()
+
+    async def validate_all_links(self, entries: List[WebLink]) -> Tuple[List[WebLink], List[WebLink]]:
+        """Validate all URLs and separate valid from invalid links."""
+        unique_urls = {entry.url for entry in entries}
+        
+        # Process URLs in batches
+        batch_size = 50
+        url_batches = [list(unique_urls)[i:i + batch_size] 
+                      for i in range(0, len(unique_urls), batch_size)]
+        
+        validity_map = {}
+        for batch in url_batches:
+            batch_results = await self.url_validator.validate_urls_batch(set(batch))
+            validity_map.update(batch_results)
+        
+        valid_entries = []
+        invalid_entries = []
+        
+        for entry in entries:
+            if validity_map.get(entry.url, False):
+                valid_entries.append(entry)
+            else:
+                invalid_entries.append(entry)
+        
+        return valid_entries, invalid_entries
+
+    def _categorize_chunk(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
+        """Process a chunk of entries for categorization."""
+        categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
+        categorized["Uncategorized"] = {"General": []}
+        
+        for entry in entries:
+            # Existing categorization logic...
+            pass
+        
+        return categorized
 
     @staticmethod
     def load_config(config_path: Optional[str]) -> dict:
@@ -238,13 +306,10 @@ class WebLinkOrganizer:
             return entries
 
         for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Check for group header
-            if line.endswith(':') and 'http' not in line:
-                current_group = line[:-1]
+            # Check for group header (now handles more formats)
+            if (line.endswith(':') or line.startswith('#')) and 'http' not in line:
+                # Clean up the group name
+                current_group = line.strip('# :').strip()
                 continue
 
             # Handle bullet points
@@ -281,39 +346,23 @@ class WebLinkOrganizer:
         return entries
 
     def categorize_entries(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
-        """Categorize entries using hierarchical structure with progress tracking."""
+        """
+        Categorize entries with following priority:
+        1. Try automatic categorization first
+        2. If that fails, use original group from input file
+        3. If no group exists, put in Uncategorized
+        """
         with tqdm(total=len(entries), desc="Categorizing entries", unit="link") as pbar:
             # Initialize categories
             categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
-            categorized["Miscellaneous"] = {"Uncategorized": []}
+            categorized["Uncategorized"] = {"General": []}
 
-            # First pass: respect existing groups
-            remaining_entries = []
             for entry in entries:
-                if entry.group:
-                    assigned = False
-                    group_lower = entry.group.lower()
-                    for main_cat, config in self.hierarchy.items():
-                        if any(keyword in group_lower for keyword in config['keywords']):
-                            if entry.group not in categorized[main_cat]:
-                                categorized[main_cat][entry.group] = []
-                            categorized[main_cat][entry.group].append(entry)
-                            assigned = True
-                            break
-                    
-                    if not assigned:
-                        remaining_entries.append(entry)
-                else:
-                    remaining_entries.append(entry)
-                pbar.update(1)
-
-            # Second pass: categorize remaining entries
-            for entry in remaining_entries:
                 assigned = False
                 desc = (entry.description or '').lower()
                 url = entry.url.lower()
 
-                # Try to match with main categories first
+                # First attempt: Try automatic categorization
                 for main_cat, config in self.hierarchy.items():
                     if any(keyword in desc or keyword in url for keyword in config['keywords']):
                         # Try to find appropriate subcategory
@@ -335,17 +384,77 @@ class WebLinkOrganizer:
                             assigned = True
                         break
 
-                if not assigned:
-                    categorized["Miscellaneous"]["Uncategorized"].append(entry)
+                # Second attempt: Use original group if automatic categorization failed
+                if not assigned and entry.group:
+                    group = entry.group
+                    # Check if this group matches any main category
+                    for main_cat in self.hierarchy.keys():
+                        if main_cat.lower() == group.lower():
+                            if "General" not in categorized[main_cat]:
+                                categorized[main_cat]["General"] = []
+                            categorized[main_cat]["General"].append(entry)
+                            assigned = True
+                            break
 
-        # Clean up empty categories
-        return {
-            main_cat: subcats for main_cat, subcats in categorized.items()
-            if any(entries for entries in subcats.values())
-        }
+                    # If not a main category, create it as a new top-level category
+                    if not assigned:
+                        if group not in categorized:
+                            categorized[group] = {}
+                        if "General" not in categorized[group]:
+                            categorized[group]["General"] = []
+                        categorized[group]["General"].append(entry)
+                        assigned = True
+
+                # Last resort: Uncategorized
+                if not assigned:
+                    categorized["Uncategorized"]["General"].append(entry)
+
+                pbar.update(1)
+
+            # Sort entries within each subcategory
+            for main_cat in categorized:
+                for subcat in categorized[main_cat]:
+                    categorized[main_cat][subcat].sort(
+                        key=lambda e: (
+                            e.description.lower() if e.description else e.url.lower(),
+                            e.url.lower()
+                        )
+                    )
+
+            # Clean up and sort categories
+            filtered_categories = {}
+            # Sort main categories alphabetically (keeping Uncategorized for last)
+            main_cats = sorted(
+                [cat for cat in categorized.keys() if cat != "Uncategorized"]
+            )
+            if "Uncategorized" in categorized:
+                main_cats.append("Uncategorized")
+
+            # Create final sorted structure
+            for main_cat in main_cats:
+                if any(entries for entries in categorized[main_cat].values()):
+                    # Sort subcategories
+                    filtered_subcats = {
+                        subcat: entries 
+                        for subcat, entries in sorted(
+                            categorized[main_cat].items(),
+                            key=lambda x: (
+                                # Sort "General" first, "Other" last, rest alphabetically
+                                0 if x[0] == "General" else 
+                                2 if x[0].startswith("Other") else 
+                                1,
+                                x[0].lower()
+                            )
+                        )
+                        if entries
+                    }
+                    if filtered_subcats:
+                        filtered_categories[main_cat] = filtered_subcats
+
+            return filtered_categories
 
     def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], output_file: str):
-        """Write organized links to markdown file."""
+        """Write organized links to markdown file with sorted categories and entries."""
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write header with metadata
             total_links = sum(
@@ -356,13 +465,20 @@ class WebLinkOrganizer:
             total_subcats = sum(len(subcats) for subcats in categories.values())
             
             f.write("# Organized Web Links\n\n")
-            # Use datetime.now(UTC) instead of datetime.utcnow()
             f.write(f"*Generated on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC*\n")
             f.write(f"*Total Links: {total_links} in {total_subcats} subcategories*\n\n")
             
             # Table of Contents
             f.write("## Table of Contents\n\n")
-            for main_cat in sorted(categories.keys()):
+            
+            # Sort main categories (keeping Uncategorized last)
+            main_categories = sorted(
+                [cat for cat in categories.keys() if cat != "Uncategorized"]
+            )
+            if "Uncategorized" in categories:
+                main_categories.append("Uncategorized")
+
+            for main_cat in main_categories:
                 if not categories[main_cat]:
                     continue
                 
@@ -370,7 +486,19 @@ class WebLinkOrganizer:
                 cat_count = sum(len(entries) for entries in categories[main_cat].values())
                 f.write(f"- [**{main_cat}**](#{main_anchor}) ({cat_count} links)\n")
                 
-                for subcat in sorted(categories[main_cat].keys()):
+                # Sort subcategories
+                subcats = sorted(
+                    categories[main_cat].keys(),
+                    key=lambda x: (
+                        # Sort "General" first, "Other" last, rest alphabetically
+                        0 if x == "General" else 
+                        2 if x.startswith("Other") else 
+                        1,
+                        x.lower()
+                    )
+                )
+                
+                for subcat in subcats:
                     subcat_anchor = f"{main_anchor}-{self.make_anchor(subcat)}"
                     subcat_count = len(categories[main_cat][subcat])
                     f.write(f"  - [{subcat}](#{subcat_anchor}) ({subcat_count} links)\n")
@@ -378,13 +506,24 @@ class WebLinkOrganizer:
             f.write("\n---\n\n")
             
             # Write categories and links
-            for main_cat in sorted(categories.keys()):
+            for main_cat in main_categories:
                 if not categories[main_cat]:
                     continue
                 
                 f.write(f"# {main_cat}\n\n")
                 
-                for subcat in sorted(categories[main_cat].keys()):
+                # Sort subcategories
+                subcats = sorted(
+                    categories[main_cat].keys(),
+                    key=lambda x: (
+                        0 if x == "General" else 
+                        2 if x.startswith("Other") else 
+                        1,
+                        x.lower()
+                    )
+                )
+                
+                for subcat in subcats:
                     entries = categories[main_cat][subcat]
                     if not entries:
                         continue
@@ -394,9 +533,12 @@ class WebLinkOrganizer:
                     # Sort entries
                     sorted_entries = sorted(
                         entries,
-                        key=lambda e: (e.description or '').lower() or e.url.lower()
+                        key=lambda e: (
+                            (e.description or '').lower() or e.url.lower(),
+                            e.url.lower()
+                        )
                     )
-                    
+
                     for entry in sorted_entries:
                         if entry.description and entry.description != entry.url:
                             f.write(f"- {entry.description}: {entry.url}\n")
