@@ -26,6 +26,7 @@ import time
 from datetime import datetime, UTC  # Add UTC import at the top of the file
 import argparse
 from tqdm import tqdm
+# Add required imports at the top of your file
 import multiprocessing
 from logging.handlers import QueueHandler, QueueListener
 
@@ -1097,8 +1098,8 @@ def parse_args():
     )
     return parser.parse_args()
 
-def setup_logging(debug: bool, log_file: str = "categorization.log"):
-    """Setup logging configuration to output to both file and console."""
+def setup_logging(debug: bool, log_queue: multiprocessing.Queue, log_file: str = "categorization.log"):
+    """Setup logging configuration to output to both file and console with multiprocessing support."""
     # Get the root logger
     root_logger = logging.getLogger()
     
@@ -1108,23 +1109,18 @@ def setup_logging(debug: bool, log_file: str = "categorization.log"):
     
     log_level = logging.DEBUG if debug else logging.INFO
     
-    # Create formatters for console and file
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # Create formatters
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_formatter = logging.Formatter('%(message)s')  # Simpler format for console
     
-    # Setup file handler
-    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)  # Always log debug to file
-    file_handler.setFormatter(formatter)
-    
-    # Setup console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    
-    # Setup root logger
+    # Setup queue handler for multiprocessing
+    queue_handler = QueueHandler(log_queue)
+    root_logger.addHandler(queue_handler)
     root_logger.setLevel(logging.DEBUG)  # Capture all levels
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
+    
+    # Prevent propagation of messages to avoid duplicates
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
     
     return root_logger
 
@@ -1132,32 +1128,38 @@ async def main():
     """Enhanced main function with async support and progress tracking, including URL validation and parallel processing."""
     args = parse_args()
     
-    # Setup & configure logging
-    logger = setup_logging(args.debug)
-
-    # Setup logging with multiprocessing support
+    # Setup multiprocessing logging
     log_queue = multiprocessing.Queue()
-    queue_handler = QueueHandler(log_queue)
     
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.addHandler(queue_handler)
-    root_logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    # Create and start the logging listener
+    file_handler = logging.FileHandler('categorization.log', mode='w', encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setLevel(logging.DEBUG)
     
-    # Start logging listener
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    console_handler.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    
     listener = QueueListener(
         log_queue,
-        logging.FileHandler('categorization.log', mode='w'),
-        logging.StreamHandler()
+        file_handler,
+        console_handler,
+        respect_handler_level=True
     )
     listener.start()
     
+    # Setup logging
+    logger = setup_logging(args.debug, log_queue)
+    
     try:
-        logger = logging.getLogger(__name__)
-        # Initialize organizer
-        logger.info(f"Starting weblinks organizer at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        # Get current time in UTC
+        current_time = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Log startup information
+        logger.info(f"Starting weblinks organizer at {current_time} UTC")
         logger.info(f"User: {os.getlogin()}")
-
+        
+        # Initialize organizer
         logger.info("Initializing WebLinkOrganizer...")
         organizer = WebLinkOrganizer(args.config)
         
@@ -1215,14 +1217,11 @@ async def main():
         if args.debug:
             logger.exception("Detailed error information:")
         sys.exit(1)
-
+    
     finally:
         listener.stop()
 
 if __name__ == "__main__":
-    # Add required imports at the top of your file
-    import multiprocessing
-    from logging.handlers import QueueHandler, QueueListener
     
     # Run async main
     asyncio.run(main())
