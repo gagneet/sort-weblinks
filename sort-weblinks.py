@@ -282,6 +282,7 @@ class WebLinkOrganizer:
     @staticmethod
     def load_config(config_path: Optional[str]) -> dict:
         """Load configuration from YAML file or use defaults."""
+        logger = logging.getLogger(__name__)
         default_config = {
             'settings': {
                 'timeout': 5,
@@ -340,6 +341,7 @@ class WebLinkOrganizer:
 
     def load_cache(self) -> dict:
         """Load URL cache from file."""
+        logger = logging.getLogger(__name__)
         if self.cache_file.exists():
             try:
                 with open(self.cache_file, 'r', encoding='utf-8') as f:
@@ -357,6 +359,7 @@ class WebLinkOrganizer:
 
     def save_cache(self):
         """Save URL cache to file."""
+        logger = logging.getLogger(__name__)
         try:
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self.url_cache, f, indent=2)
@@ -365,6 +368,7 @@ class WebLinkOrganizer:
 
     async def fetch_title(self, url: str) -> Optional[str]:
         """Fetch page title asynchronously with caching."""
+        logger = logging.getLogger(__name__)
         cache_key = url
         current_time = time.time()
         
@@ -452,6 +456,7 @@ class WebLinkOrganizer:
 
     def parse_links(self, file_path: str) -> List[WebLink]:
         """Parse links from file with improved error handling."""
+        logger = logging.getLogger(__name__)
         entries = []
         current_group = None
         
