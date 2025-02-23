@@ -44,7 +44,7 @@ python weblinks_organizer.py -i weblinks.txt -o organized.md -c config.yaml --de
 Added a log file generation for the categorization.
 
 ```bash
-python weblinks_organizer.py -i weblinks.txt -o organized.md -c config.yaml --debug > categorization.log
+python weblinks_organizer.py -i weblinks.txt -o organized.md -c config.yaml --debug [> categorization.log -> this happens by default now]
 ```
 
 Now we can then analyze `categorization.log` to see why specific links are being categorized incorrectly and adjust the keywords and scoring system in `config.yaml` accordingly.

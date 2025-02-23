@@ -29,11 +29,11 @@ from tqdm import tqdm
 
 
 # Configure logging
-logging.basicConfig(
+"""logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)"""
 
 @dataclass
 class WebLink:
@@ -52,6 +52,7 @@ class URLValidator:
     def __init__(self, timeout: int = 10, max_workers: int = 10):
         self.timeout = timeout
         self.max_workers = max_workers
+        self.logger = logging.getLogger(__name__)
         
     async def check_url_validity(self, url: str) -> Tuple[str, bool]:
         """Check if a URL is valid and accessible."""
@@ -98,7 +99,7 @@ class URLValidator:
                                 pass
                         return url, False
         except Exception as e:
-            logger.debug(f"URL validation error for {url}: {str(e)}")
+            self.logger.debug(f"URL validation error for {url}: {str(e)}")
             # Consider URLs with valid format as potentially valid even if we can't connect
             if all([result.scheme, result.netloc]):
                 return url, True
@@ -122,6 +123,7 @@ class URLValidator:
 class WebLinkOrganizer:
     def __init__(self, config_path: Optional[str] = None):
         """Initialize the WebLinkOrganizer with configuration."""
+        self.logger = logging.getLogger(__name__)
         # First load the configuration
         self.config = self.load_config(config_path)
         # Extract settings and hierarchy from config
@@ -172,7 +174,7 @@ class WebLinkOrganizer:
                     entry_pbar.update(1)
         
         # Print summary
-        logger.info(f"Validation complete: {len(valid_entries)} valid, {len(invalid_entries)} invalid URLs")
+        self.logger.info(f"Validation complete: {len(valid_entries)} valid, {len(invalid_entries)} invalid URLs")
         return valid_entries, invalid_entries
 
     def _categorize_chunk(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
@@ -899,6 +901,13 @@ def parse_args():
 
 def setup_logging(debug: bool, log_file: str = "categorization.log"):
     """Setup logging configuration to output to both file and console."""
+    # Get the root logger
+    root_logger = logging.getLogger()
+    
+    # Remove any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
     log_level = logging.DEBUG if debug else logging.INFO
     
     # Create formatters for console and file
@@ -915,7 +924,6 @@ def setup_logging(debug: bool, log_file: str = "categorization.log"):
     console_handler.setFormatter(formatter)
     
     # Setup root logger
-    root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # Capture all levels
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
@@ -928,11 +936,12 @@ async def main():
     
     # Setup & configure logging
     logger = setup_logging(args.debug)
-    logger.info(f"Starting weblinks organizer at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    logger.info(f"User: {os.getlogin()}")
     
     try:
         # Initialize organizer
+        logger.info(f"Starting weblinks organizer at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        logger.info(f"User: {os.getlogin()}")
+
         logger.info("Initializing WebLinkOrganizer...")
         organizer = WebLinkOrganizer(args.config)
         
