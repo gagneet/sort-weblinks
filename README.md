@@ -236,14 +236,23 @@ The error occurred because the default configuration in the original code didn't
 - Show exactly where links are being filtered out
 - Provide detailed categorization logging
 - Help identify why links might be miscategorized
+- Added @staticmethod decorator to both default_hierarchy and load_config methods
+- Moved default_hierarchy before load_config to ensure it's defined first
+- Updated the hierarchy structure to include more detailed categorization rules
+- Added categorization settings in the default configuration
 
 Logging enhancements, adding a 'setup_logging' function:
 
-- It handles both file and console output
-- It provides more control over log formatting
-- It allows different log levels for file and console
-- It creates a new log file for each run
-- It properly handles Unicode characters in the log
+- Handles both file and console output
+- Provides more control over log formatting
+- Allows different log levels for file and console
+- Creates a new log file for each run
+- Properly handles Unicode characters in the log
+- Properly handles multiprocessing logging
+- Maintains clean console output
+- Records detailed logs in the file
+- Avoids duplicate messages
+- Works with both parallel and single-threaded processing
 
 Output:
 
@@ -251,6 +260,15 @@ Output:
 - Skip `### General` when it's the only subcategory in a category
 - Remove duplicate headings
 - Keep the hierarchy clean and simple
+
+We'll see proper categorization of your links based on the defined hierarchy.
+The categorization will use:
+
+- Primary keywords (high confidence matches)
+- Secondary keywords (supporting matches)
+- Exclude keywords (to avoid false positives)
+- Subcategory-specific keywords
+- Proper weighting for URL vs description matches
 
 ### v0.4
 
@@ -319,7 +337,7 @@ These changes make the URL validation more robust by:
 - Being more lenient with timeouts (increased to 10 seconds)
 - Considering URLs with valid format as potentially valid even if we can't connect
 - Better error handling and logging
-- Reordered the initialization sequence in __init__ to ensure dependencies are properly initialized
+- Reordered the initialization sequence in `__init__` to ensure dependencies are properly initialized
 - Improved the configuration loading with proper default values
 - Added better error handling and logging
 - Ensured the configuration structure is complete with all required settings

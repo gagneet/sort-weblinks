@@ -26,7 +26,8 @@ import time
 from datetime import datetime, UTC  # Add UTC import at the top of the file
 import argparse
 from tqdm import tqdm
-
+import multiprocessing
+from logging.handlers import QueueHandler, QueueListener
 
 # Configure logging
 """logging.basicConfig(
@@ -116,7 +117,7 @@ class URLValidator:
             
         return {
             url: valid for url,
-			valid in results 
+            valid in results 
             if not isinstance(valid, Exception)
         }
 
@@ -128,8 +129,8 @@ class WebLinkOrganizer:
         self.config = self.load_config(config_path)
         # Extract settings and hierarchy from config
         self.settings = self.config.get('settings', {})
-        self.hierarchy = self.config.get('categories', self.default_hierarchy())
-        # Initialize validator with more lenient timeout, cache and session
+        self.hierarchy = self.config.get('categories', {})
+        # Initialize validator with more lenient timeout
         self.url_validator = URLValidator(timeout=10)  # Increased timeout
         self.invalid_links = []  # Store invalid links
         self.cache_file = Path('url_cache.json')
@@ -280,6 +281,105 @@ class WebLinkOrganizer:
         return categorized
 
     @staticmethod
+    def default_hierarchy() -> dict:
+        """Default category hierarchy."""
+        return {
+            "Development Resources": {
+                "subcategories": {
+                    "GitHub Repositories": {
+                        "keywords": ["github.com", "repository", "repo", "git"]
+                    },
+                    "API Documentation": {
+                        "keywords": ["api", "swagger", "openapi", "documentation", "docs"]
+                    },
+                    "Development Tools": {
+                        "keywords": ["tool", "ide", "editor", "compiler", "debug"]
+                    },
+                    "Code Libraries": {
+                        "keywords": ["library", "package", "module", "dependency", "npm", "pip"]
+                    },
+                    "Stack Exchange Resources": {
+                        "keywords": ["stackoverflow", "stackexchange", "superuser", "serverfault"]
+                    }
+                },
+                "keywords": {
+                    "primary": ["github.com", "gitlab.com", "bitbucket.org", "stackoverflow.com", "docs.github"],
+                    "secondary": ["git", "repo", "api", "sdk", "dev", "code", "library", "framework"],
+                    "exclude": ["blog", "article"]
+                }
+            },
+            "Web Development": {
+                "subcategories": {
+                    "Frontend Frameworks": {
+                        "keywords": ["react", "vue", "angular", "svelte", "nextjs", "nuxt"]
+                    },
+                    "CSS Resources": {
+                        "keywords": ["css", "sass", "less", "stylesheet", "tailwind", "bootstrap"]
+                    },
+                    "JavaScript Libraries": {
+                        "keywords": ["javascript", "js", "typescript", "npm", "yarn", "jquery"]
+                    },
+                    "Web Design Tools": {
+                        "keywords": ["figma", "sketch", "adobe xd", "webflow"]
+                    },
+                    "UI/UX Resources": {
+                        "keywords": ["ui", "ux", "design", "wireframe", "prototype"]
+                    }
+                },
+                "keywords": {
+                    "primary": ["react", "vue", "angular", "nodejs", "webpack"],
+                    "secondary": ["css", "html", "javascript", "js", "web", "frontend", "backend"],
+                    "exclude": ["article", "tutorial"]
+                }
+            },
+            "DevOps & Infrastructure": {
+                "subcategories": {
+                    "Cloud Services": {
+                        "keywords": ["aws", "azure", "gcp", "cloud", "serverless"]
+                    },
+                    "Deployment Tools": {
+                        "keywords": ["deploy", "jenkins", "circleci", "travis", "gitlab-ci"]
+                    },
+                    "Monitoring Solutions": {
+                        "keywords": ["monitor", "grafana", "prometheus", "nagios", "zabbix"]
+                    },
+                    "Container Resources": {
+                        "keywords": ["docker", "kubernetes", "k8s", "container", "pod"]
+                    },
+                    "CI/CD Tools": {
+                        "keywords": ["ci", "cd", "pipeline", "automation", "github-actions"]
+                    }
+                },
+                "keywords": {
+                    "primary": ["cloud", "aws", "azure", "gcp", "docker", "kubernetes"],
+                    "secondary": ["devops", "ci/cd", "pipeline", "infrastructure"],
+                    "exclude": ["blog"]
+                }
+            },
+            "Learning Resources": {
+                "subcategories": {
+                    "Tutorials": {
+                        "keywords": ["tutorial", "guide", "how-to", "walkthrough"]
+                    },
+                    "Online Courses": {
+                        "keywords": ["course", "class", "lesson", "udemy", "coursera", "edx"]
+                    },
+                    "Documentation": {
+                        "keywords": ["doc", "docs", "documentation", "manual", "reference"]
+                    },
+                    "Learning Platforms": {
+                        "keywords": ["academy", "learning", "platform", "mooc", "education"]
+                    }
+                },
+                "keywords": {
+                    "primary": ["course", "learn", "tutorial", "training"],
+                    "secondary": ["guide", "handbook", "documentation", "example", "lesson"],
+                    "exclude": ["changelog", "release"]
+                }
+            }
+        }
+
+    @staticmethod
     def load_config(config_path: Optional[str]) -> dict:
         """Load configuration from YAML file or use defaults."""
         logger = logging.getLogger(__name__)
@@ -290,8 +390,13 @@ class WebLinkOrganizer:
                 'concurrent_requests': 10,
                 'cache_duration': 86400,  # 24 hours
                 'fetch_titles': True,
-                'min_cluster_size': 2,
-                'clustering_threshold': 0.7
+                'categorization': {
+                    'min_score_threshold': 3,
+                    'url_match_weight': 3,
+                    'description_match_weight': 2,
+                    'exact_match_bonus': 2,
+                    'partial_match_weight': 1
+                }
             },
             'categories': WebLinkOrganizer.default_hierarchy()
         }
@@ -321,6 +426,7 @@ class WebLinkOrganizer:
         
         logger.info("Using default configuration")
         return default_config
+
 
     def create_session(self) -> requests.Session:
         """Create a requests session with retry logic."""
@@ -507,6 +613,52 @@ class WebLinkOrganizer:
 
         return entries
 
+    def _finalize_categories(self, categorized: Dict) -> Dict:
+        """Helper method to sort and clean up categories."""
+        logger = logging.getLogger(__name__)
+        
+        # Sort entries within each subcategory
+        for main_cat in categorized:
+            for subcat in categorized[main_cat]:
+                categorized[main_cat][subcat].sort(
+                    key=lambda e: (
+                        e.description.lower() if e.description else e.url.lower(),
+                        e.url.lower()
+                    )
+                )
+
+        # Clean up and sort categories
+        filtered_categories = {}
+        # Sort main categories alphabetically (keeping Uncategorized for last)
+        main_cats = sorted(
+            [cat for cat in categorized.keys() if cat != "Uncategorized"]
+        )
+        if "Uncategorized" in categorized:
+            main_cats.append("Uncategorized")
+
+        # Create final sorted structure
+        for main_cat in main_cats:
+            if any(entries for entries in categorized[main_cat].values()):
+                filtered_subcats = {
+                    subcat: entries 
+                    for subcat, entries in sorted(
+                        categorized[main_cat].items(),
+                        key=lambda x: (
+                            0 if x[0] == "General" else 
+                            2 if x[0].startswith("Other") else 
+                            1,
+                            x[0].lower()
+                        )
+                    )
+                    if entries
+                }
+                if filtered_subcats:
+                    filtered_categories[main_cat] = filtered_subcats
+                    logger.debug(f"\nFinalized category '{main_cat}' with {len(filtered_subcats)} subcategories")
+
+        return filtered_categories
+
+
     def categorize_entries(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """
         Categorize entries with following priority:
@@ -514,41 +666,88 @@ class WebLinkOrganizer:
         2. If that fails, use original group from input file
         3. If no group exists, put in Uncategorized
         """
+        logger = logging.getLogger(__name__)
+        logger.debug("\nStarting categorization process...")
+        
         with tqdm(total=len(entries), desc="Categorizing entries", unit="link") as pbar:
             # Initialize categories
             categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
             categorized["Uncategorized"] = {"General": []}
 
             for entry in entries:
+                logger.debug(f"\n{'='*50}")
+                logger.debug(f"Processing: {entry.url}")
+                logger.debug(f"Description: {entry.description}")
+                logger.debug(f"Original group: {entry.group}")
+                
                 assigned = False
                 desc = (entry.description or '').lower()
                 url = entry.url.lower()
 
                 # First attempt: Try automatic categorization
+                logger.debug("\nTrying automatic categorization:")
                 for main_cat, config in self.hierarchy.items():
-                    if any(keyword in desc or keyword in url for keyword in config['keywords']):
-                        # Try to find appropriate subcategory
-                        for subcat in config['subcategories']:
-                            if any(keyword in desc or keyword in url 
-                                  for keyword in subcat.lower().split()):
-                                if subcat not in categorized[main_cat]:
-                                    categorized[main_cat][subcat] = []
-                                categorized[main_cat][subcat].append(entry)
-                                assigned = True
-                                break
+                    matching_keywords = []
+                    
+                    # Check main category keywords
+                    for keyword in config['keywords']:
+                        if keyword in desc:
+                            matching_keywords.append(f"{keyword}(desc)")
+                        if keyword in url:
+                            matching_keywords.append(f"{keyword}(url)")
+                    
+                    if matching_keywords:
+                        logger.debug(f"Category '{main_cat}' matches with keywords: {', '.join(matching_keywords)}")
                         
-                        if not assigned:
-                            # Put in "Other" subcategory
+                        # Try to find appropriate subcategory
+                        best_subcat = None
+                        best_subcat_score = 0
+                        subcategory_matches = {}
+                        
+                        for subcat in config['subcategories']:
+                            subcat_keywords = []
+                            score = 0
+                            
+                            for keyword in subcat.lower().split():
+                                if keyword in desc:
+                                    score += 1
+                                    subcat_keywords.append(f"{keyword}(desc)")
+                                if keyword in url:
+                                    score += 2
+                                    subcat_keywords.append(f"{keyword}(url)")
+                            
+                            if score > best_subcat_score:
+                                best_subcat_score = score
+                                best_subcat = subcat
+                                subcategory_matches[subcat] = subcat_keywords
+                        
+                        if subcategory_matches:
+                            logger.debug("Subcategory matches:")
+                            for subcat, keywords in subcategory_matches.items():
+                                logger.debug(f"- {subcat}: {', '.join(keywords)}")
+                        
+                        # Assign to best subcategory or "Other"
+                        if best_subcat:
+                            if best_subcat not in categorized[main_cat]:
+                                categorized[main_cat][best_subcat] = []
+                            categorized[main_cat][best_subcat].append(entry)
+                            logger.debug(f"Assigned to: {main_cat}/{best_subcat}")
+                        else:
                             other_cat = f"Other {main_cat}"
                             if other_cat not in categorized[main_cat]:
                                 categorized[main_cat][other_cat] = []
                             categorized[main_cat][other_cat].append(entry)
-                            assigned = True
+                            logger.debug(f"No specific subcategory found, assigned to: {main_cat}/{other_cat}")
+                        
+                        assigned = True
                         break
 
                 # Second attempt: Use original group if automatic categorization failed
                 if not assigned and entry.group:
+                    logger.debug("\nTrying original group categorization:")
                     group = entry.group
+                    logger.debug(f"Original group: {group}")
+                    
                     # Check if this group matches any main category
                     for main_cat in self.hierarchy.keys():
                         if main_cat.lower() == group.lower():
@@ -556,6 +755,7 @@ class WebLinkOrganizer:
                                 categorized[main_cat]["General"] = []
                             categorized[main_cat]["General"].append(entry)
                             assigned = True
+                            logger.debug(f"Matched with main category: {main_cat}")
                             break
 
                     # If not a main category, create it as a new top-level category
@@ -566,70 +766,42 @@ class WebLinkOrganizer:
                             categorized[group]["General"] = []
                         categorized[group]["General"].append(entry)
                         assigned = True
+                        logger.debug(f"Created new category: {group}")
 
                 # Last resort: Uncategorized
                 if not assigned:
+                    logger.debug("\nNo category found, assigning to Uncategorized")
                     categorized["Uncategorized"]["General"].append(entry)
 
                 pbar.update(1)
 
-            # Sort entries within each subcategory
-            for main_cat in categorized:
-                for subcat in categorized[main_cat]:
-                    categorized[main_cat][subcat].sort(
-                        key=lambda e: (
-                            e.description.lower() if e.description else e.url.lower(),
-                            e.url.lower()
-                        )
-                    )
-
-            # Clean up and sort categories
-            filtered_categories = {}
-            # Sort main categories alphabetically (keeping Uncategorized for last)
-            main_cats = sorted(
-                [cat for cat in categorized.keys() if cat != "Uncategorized"]
-            )
-            if "Uncategorized" in categorized:
-                main_cats.append("Uncategorized")
-
-            # Create final sorted structure
-            for main_cat in main_cats:
-                if any(entries for entries in categorized[main_cat].values()):
-                    # Sort subcategories
-                    filtered_subcats = {
-                        subcat: entries 
-                        for subcat, entries in sorted(
-                            categorized[main_cat].items(),
-                            key=lambda x: (
-                                # Sort "General" first, "Other" last, rest alphabetically
-                                0 if x[0] == "General" else 
-                                2 if x[0].startswith("Other") else 
-                                1,
-                                x[0].lower()
-                            )
-                        )
-                        if entries
-                    }
-                    if filtered_subcats:
-                        filtered_categories[main_cat] = filtered_subcats
-
+            # Sort and clean up categories
+            logger.debug("\nFinalizing categories and sorting entries...")
+            filtered_categories = self._finalize_categories(categorized)
+            logger.debug("Categorization complete!")
+            
             return filtered_categories
 
     def categorize_entries_parallel(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """Categorize entries using parallel processing if the number of entries is above threshold."""
+        logger = logging.getLogger(__name__)
         PARALLEL_THRESHOLD = 50  # Only use parallel processing for 50+ entries
         
         if len(entries) < PARALLEL_THRESHOLD:
+            logger.debug("Using single-threaded processing (entries below threshold)")
             return self.categorize_entries(entries)
         
         # Determine optimal chunk size
         chunk_size = max(10, len(entries) // (os.cpu_count() or 1))
         chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
+        logger.debug(f"Split {len(entries)} entries into {len(chunks)} chunks of size ~{chunk_size}")
         
         # Process chunks in parallel
+        logger.debug("Starting parallel processing of chunks")
         with concurrent.futures.ProcessPoolExecutor() as executor:
             chunk_results = list(executor.map(self._categorize_chunk, chunks))
         
+        logger.debug("Merging results from parallel processing")
         # Merge results
         merged = {main_cat: {} for main_cat in self.hierarchy.keys()}
         merged["Uncategorized"] = {"General": []}
@@ -638,38 +810,58 @@ class WebLinkOrganizer:
         all_categories = set()
         all_subcategories = {}
         
-        for result in chunk_results:
+        logger.debug("\nCollecting categories from chunks:")
+        for i, result in enumerate(chunk_results):
+            logger.debug(f"\nProcessing chunk {i+1}/{len(chunks)}:")
             for main_cat in result:
                 all_categories.add(main_cat)
                 if main_cat not in all_subcategories:
                     all_subcategories[main_cat] = set()
                 all_subcategories[main_cat].update(result[main_cat].keys())
+                logger.debug(f"- Found category '{main_cat}' with subcategories: {', '.join(result[main_cat].keys())}")
         
         # Initialize the structure with all discovered categories
+        logger.debug("\nInitializing category structure:")
         for cat in all_categories:
             if cat not in merged:
                 merged[cat] = {}
+                logger.debug(f"- Added main category: {cat}")
             for subcat in all_subcategories.get(cat, []):
                 if subcat not in merged[cat]:
                     merged[cat][subcat] = []
+                    logger.debug(f"  - Added subcategory: {cat}/{subcat}")
         
         # Merge the entries
+        logger.debug("\nMerging entries from all chunks:")
+        entry_counts = {cat: {subcat: 0 for subcat in subcats} 
+                       for cat, subcats in all_subcategories.items()}
+        
         for result in chunk_results:
             for main_cat, subcats in result.items():
                 for subcat, entries in subcats.items():
                     merged[main_cat][subcat].extend(entries)
+                    entry_counts[main_cat][subcat] += len(entries)
+        
+        for main_cat, subcats in entry_counts.items():
+            logger.debug(f"\nCategory '{main_cat}' entry counts:")
+            for subcat, count in subcats.items():
+                logger.debug(f"- {subcat}: {count} entries")
         
         # Sort entries within each subcategory
+        logger.debug("\nSorting entries within categories:")
         for main_cat in merged:
             for subcat in merged[main_cat]:
+                before_count = len(merged[main_cat][subcat])
                 merged[main_cat][subcat].sort(
                     key=lambda e: (
                         e.description.lower() if e.description else e.url.lower(),
                         e.url.lower()
                     )
                 )
+                logger.debug(f"- Sorted {before_count} entries in {main_cat}/{subcat}")
         
         # Create final sorted structure
+        logger.debug("\nCreating final sorted structure:")
         filtered_categories = {}
         main_cats = sorted(
             [cat for cat in merged.keys() if cat != "Uncategorized"]
@@ -694,6 +886,7 @@ class WebLinkOrganizer:
                 }
                 if filtered_subcats:
                     filtered_categories[main_cat] = filtered_subcats
+                    logger.debug(f"- Finalized '{main_cat}' with {len(filtered_subcats)} subcategories")
         
         return filtered_categories
 
@@ -812,9 +1005,9 @@ class WebLinkOrganizer:
         """Create valid markdown anchor from text."""
         return re.sub(r'[^a-z0-9-]', '', text.lower().replace(' ', '-'))
 
-    @staticmethod
+    """@staticmethod
     def default_hierarchy() -> dict:
-        """Default category hierarchy."""
+        # Default category hierarchy.
         return {
             "Development Resources": {
                 "subcategories": [
@@ -868,7 +1061,7 @@ class WebLinkOrganizer:
                     "doc", "guide", "how-to", "lesson"
                 ]
             }
-        }
+        }"""
 
 def parse_args():
     """Parse command line arguments."""
@@ -941,8 +1134,26 @@ async def main():
     
     # Setup & configure logging
     logger = setup_logging(args.debug)
+
+    # Setup logging with multiprocessing support
+    log_queue = multiprocessing.Queue()
+    queue_handler = QueueHandler(log_queue)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.addHandler(queue_handler)
+    root_logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    
+    # Start logging listener
+    listener = QueueListener(
+        log_queue,
+        logging.FileHandler('categorization.log', mode='w'),
+        logging.StreamHandler()
+    )
+    listener.start()
     
     try:
+        logger = logging.getLogger(__name__)
         # Initialize organizer
         logger.info(f"Starting weblinks organizer at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
         logger.info(f"User: {os.getlogin()}")
@@ -1005,6 +1216,13 @@ async def main():
             logger.exception("Detailed error information:")
         sys.exit(1)
 
+    finally:
+        listener.stop()
+
 if __name__ == "__main__":
+    # Add required imports at the top of your file
+    import multiprocessing
+    from logging.handlers import QueueHandler, QueueListener
+    
     # Run async main
     asyncio.run(main())
