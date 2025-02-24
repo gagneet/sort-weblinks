@@ -440,15 +440,15 @@ Added statistics for number of duplicate URLs and total duplicate lines in each 
 
 - Creates a new file with _unique.md suffix containing only unique entries (keeping first occurrence of duplicates)
 - Creates a new file with _duplicates.md suffix containing all duplicate entries with their line numbers
-
+- Modified duplicate_line_nums to only include line numbers after the first occurrence using url_data[1:]
 
 ### Enhanced output to show:
 
 - Number of unique URLs that have duplicates
 - Total number of duplicate lines
 - Clear listing of which files were created
-
-
+- Which line was kept (first occurrence)
+- Which lines were removed (subsequent occurrences)
 
 ### For each original file, you'll now get:
 
@@ -461,3 +461,6 @@ Added statistics for number of duplicate URLs and total duplicate lines in each 
 - Review the duplicates file to see what was removed
 - Use the unique file as your clean version
 - Copy back any duplicates you want to keep from the duplicates file
+- The _unique.md file will contain all unique URLs plus the first occurrence of any duplicates
+- The _duplicates.md file will show you which lines were kept and which were removed
+- All other functionality (statistics, comparison, etc.) remains the same
