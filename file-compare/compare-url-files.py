@@ -40,11 +40,11 @@ def write_files_without_duplicates(file_path, original_lines, duplicates):
     """Write files separating unique and duplicate content."""
     base_name = file_path.rsplit('.', 1)[0]
 
-    # Create set of line numbers that contain duplicates
+    # Create set of line numbers that contain duplicates, excluding first occurrence
     duplicate_line_nums = {line_num for url_data in duplicates.values()
-                           for line_num, _ in url_data[1:]}  # Keep first occurrence
+                           for line_num, _ in url_data[1:]}  # Only remove subsequent occurrences
 
-    # Write file without duplicates
+    # Write file without duplicates (keeping first occurrence)
     with open(f"{base_name}_unique.md", 'w', encoding='utf-8') as unique_file:
         for i, line in enumerate(original_lines, 1):
             if i not in duplicate_line_nums:
@@ -54,7 +54,9 @@ def write_files_without_duplicates(file_path, original_lines, duplicates):
     with open(f"{base_name}_duplicates.md", 'w', encoding='utf-8') as dup_file:
         for url, occurrences in duplicates.items():
             dup_file.write(f"\n--- Duplicate URL: {url} ---\n")
-            for line_num, line in occurrences:
+            dup_file.write(f"Kept Line {occurrences[0][0]}: {occurrences[0][1]}\n")  # Show which line was kept
+            dup_file.write("Removed duplicates:\n")
+            for line_num, line in occurrences[1:]:  # Show which lines were removed
                 dup_file.write(f"Line {line_num}: {line}\n")
 
 
