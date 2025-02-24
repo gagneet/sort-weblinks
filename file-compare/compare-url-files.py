@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 # Function to extract and normalize URL from a line
 def extract_url(line):
     """Extracts URLs more accurately, handling prefixes."""
-	# url_pattern = r'(https?://[^\s\'"<]+)'
+    # url_pattern = r'(https?://[^\s\'"<]+)'
     url_pattern = r'https?://[^\s\'"<]+'  # Focus on HTTP/HTTPS URLs
     match = re.search(url_pattern, line)
     if match:

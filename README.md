@@ -8,6 +8,7 @@
 - [**Caching and re-use of the URL descriptions**](#caching-and-re-use-of-the-url-descriptions)
 - [**Issues and Error solutions**](#issues-and-error-solutions)
 - [**Updates and key changes**](#updates-and-key-changes)
+- [**Comparison and remove Duplicates**](#comparison-and-remove-duplicates)
 
 ## Introduction
 
@@ -35,7 +36,7 @@ Improved the script to:
 - Properly handle URL categorization without duplicates
 - Respect original categories from your input file
 - Implement efficient caching for faster subsequent runs
-- Follow proper markdown formatting guidelines
+- Follow proper Markdown formatting guidelines
 - Better organize your web links
 
 The UTC timestamp provided (2025-02-22 22:21:59) indicates the time, i.e. night UTC time.
@@ -87,10 +88,10 @@ The script will:
 ### Common cache durations
 
 ```yaml
-cache_duration: 3600     # 1 hour
-cache_duration: 86400    # 1 day (default)
-cache_duration: 604800   # 1 week
-cache_duration: 2592000  # 30 days
+1)cache_duration: 3600     # 1 hour
+2)cache_duration: 86400    # 1 day (default)
+3)cache_duration: 604800   # 1 week
+4)cache_duration: 2592000  # 30 days
 ```
 
 ## Issues and Error solutions
@@ -123,7 +124,7 @@ It handles blank lines and section headers like Test Management 2.0: as group ti
 
 This happens in the TF-IDF vectorization step where you're setting:
 
-```python
+```text
 min_df=1 (terms must appear in at least 1 document)
 max_df=0.9 (terms can appear in at most 90% of documents)
 ```
@@ -152,7 +153,7 @@ For very small datasets (3 or fewer), it now uses min_samples=1
 
 This error occurs because:
 
-```python
+```text
 min_df=1 means terms must appear in at least 1 document
 max_df=0.9 means terms must appear in at most 90% of documents
 ```
@@ -235,7 +236,7 @@ The error occurred because the default configuration in the original code didn't
 - Restore generic descriptions for URLs
 - Show exactly where links are being filtered out
 - Provide detailed categorization logging
-- Help identify why links might be miscategorized
+- Help identify why links might be mis-categorized
 - Added @staticmethod decorator to both default_hierarchy and load_config methods
 - Moved default_hierarchy before load_config to ensure it's defined first
 - Updated the hierarchy structure to include more detailed categorization rules
@@ -275,7 +276,7 @@ The categorization will use:
 - Prevent duplicate entries by tracking assigned URLs
 - Improve categorization accuracy using a scoring system
 - Respect manual categorization from the input file
-- Use proper markdown heading hierarchy (H1 -> H2 -> H3)
+- Use proper Markdown heading hierarchy (H1 -> H2 -> H3)
 - Better organize the output with consistent structure
 - Add relevance thresholds to prevent incorrect categorization
 
@@ -410,7 +411,7 @@ python weblinks_organizer.py --debug
 Code Structure Improvements:
 
 - There's duplicate functionality between write_hierarchical_markdown() and the markdown writing section in main(). We should consolidate this.
-- The categorize_with_hierarchy() function is quite long and could be split into smaller, more focused functions.
+- The `categorize_with_hierarchy()` function is quite long and could be split into smaller, more focused functions.
 
 Error Handling & Robustness:
 
@@ -430,3 +431,33 @@ Feature Enhancements:
 - Implement URL validation and cleanup
 - Add support for relative dates in output
 - Add sorting options for links within categories
+
+## Comparison and remove duplicates
+
+Added statistics for number of duplicate URLs and total duplicate lines in each file
+
+### Created new function write_files_without_duplicates that:
+
+- Creates a new file with _unique.md suffix containing only unique entries (keeping first occurrence of duplicates)
+- Creates a new file with _duplicates.md suffix containing all duplicate entries with their line numbers
+
+
+### Enhanced output to show:
+
+- Number of unique URLs that have duplicates
+- Total number of duplicate lines
+- Clear listing of which files were created
+
+
+
+### For each original file, you'll now get:
+
+- A _unique.md file containing only unique entries
+- A _duplicates.md file containing all duplicates with their line numbers
+- Detailed statistics about duplicates in the console output
+
+### Now we can get better stats
+
+- Review the duplicates file to see what was removed
+- Use the unique file as your clean version
+- Copy back any duplicates you want to keep from the duplicates file

@@ -3,14 +3,13 @@ import sys
 import os
 import asyncio
 import aiohttp
+from aiohttp import ClientTimeout, ClientSession
 from bs4 import BeautifulSoup
-import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import DBSCAN
 from collections import Counter
-from urllib.parse import urlparse, urljoin
 import yaml
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TextIO
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -18,7 +17,7 @@ from pathlib import Path
 import json
 import concurrent.futures
 from typing import List, Tuple, Set
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 import requests
@@ -29,13 +28,6 @@ from tqdm import tqdm
 # Add required imports at the top of your file
 import multiprocessing
 from logging.handlers import QueueHandler, QueueListener
-
-# Configure logging
-"""logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)"""
 
 
 @dataclass
@@ -60,9 +52,9 @@ class URLValidator:
 
     async def check_url_validity(self, url: str) -> Tuple[str, bool]:
         """Check if a URL is valid and accessible."""
+        # First validate the URL format
         result = urlparse(url)
         try:
-            # First validate URL format
             if not all([result.scheme, result.netloc]):
                 return url, False
 
@@ -558,16 +550,32 @@ class WebLinkOrganizer:
         return {}
 
     def save_cache(self):
-        """Save URL cache to file."""
-        logger = logging.getLogger(__name__)
+        """Save URL cache to file with proper type hinting."""
         try:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
+            with open(self.cache_file, 'w', encoding='utf-8') as f: # type: TextIO
                 json.dump(self.url_cache, f, indent=2)
+        except PermissionError:
+            self.logger.error(f"Permission denied writing to {self.cache_file}")
+        except OSError as e:
+            self.logger.error(f"OS error writing cache: {e}")
         except Exception as e:
-            logger.warning(f"Failed to save cache: {e}")
+            self.logger.warning(f"Unexpected error saving cache: {e}")
 
-    async def fetch_title(self, url: str) -> Optional[str]:
+    async def fetch_title(self, url: str, semaphore: asyncio.Semaphore) -> Optional[str]:
         """Fetch page title asynchronously with caching."""
+        async with semaphore:
+            await asyncio.sleep(0.5)  # Rate limit
+            timeout = ClientTimeout(total=self.settings.get('timeout', 5))
+            async with ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        title = soup.title.string.strip() if soup.title else None
+                        if title:
+                            self.url_cache[url] = {'title': title, 'timestamp': time.time()}
+                        return title
+
         logger = logging.getLogger(__name__)
         cache_key = url
         current_time = time.time()
@@ -596,7 +604,7 @@ class WebLinkOrganizer:
                             }
                             return title
         except Exception as e:
-            logger.debug(f"Failed to fetch title for {url}: {e}")
+            logger.debug(f"\nFailed to fetch title for {url}: {e}")
         return None
 
     async def fetch_missing_titles(self, entries: List[WebLink]) -> List[WebLink]:
@@ -608,6 +616,13 @@ class WebLinkOrganizer:
             entry for entry in entries
             if not entry.description or entry.description == entry.url
         ]
+
+        semaphore = asyncio.Semaphore(self.settings.get('concurrent_requests', 10))
+        tasks = [self.fetch_title(entry.url, semaphore) for entry in entries_needing_titles]
+        titles = await asyncio.gather(*tasks)
+        for entry, title in zip(entries_needing_titles, titles):
+            if title:
+                entry.description = title
 
         if not entries_needing_titles:
             return entries
@@ -657,6 +672,7 @@ class WebLinkOrganizer:
     def parse_links(self, file_path: str) -> List[WebLink]:
         """Parse links from file with improved error handling."""
         logger = logging.getLogger(__name__)
+        seen_urls = set()
         entries = []
         current_group = None
 
@@ -668,6 +684,13 @@ class WebLinkOrganizer:
             return entries
 
         for line in lines:
+            match = re.match(r'(https?://\S+)', line.strip())
+            if match:
+                url = match.group(1)
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    entries.append(WebLink(url=url, group=current_group, format='raw_url'))
+
             # Check for group header (now handles more formats)
             if (line.endswith(':') or line.startswith('#')) and 'http' not in line:
                 # Clean up the group name
@@ -1270,7 +1293,7 @@ async def main():
         logger.info(f"Found {unique_urls} unique URLs (removed {initial_count - unique_urls} duplicates)")
 
         # Validate URLs
-        logger.info("Validating URLs...")
+        logger.info("\nValidating URLs...")
         valid_entries, invalid_entries = await organizer.validate_all_links(entries)
         logger.info(f"Found {len(valid_entries)} valid and {len(invalid_entries)} invalid links")
 
