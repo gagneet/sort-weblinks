@@ -1,11 +1,19 @@
 import re
+from urllib.parse import urlparse
 
-# Function to extract URL from a line
+# Function to extract and normalize URL from a line
 def extract_url(line):
     """Extracts URLs more accurately, handling prefixes."""
+	# url_pattern = r'(https?://[^\s\'"<]+)'
     url_pattern = r'https?://[^\s\'"<]+'  # Focus on HTTP/HTTPS URLs
     match = re.search(url_pattern, line)
-    return match.group(0).strip().lower() if match else None
+    if match:
+        url = match.group(0).strip()
+        # Normalize URL: lowercase, remove trailing slash, ignore query params if desired
+        parsed = urlparse(url)
+        normalized_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".lower().rstrip('/')
+        return normalized_url
+    return None
 
 # Read and process the files
 def compare_files(file1_path, file2_path):
@@ -16,6 +24,8 @@ def compare_files(file1_path, file2_path):
                 url = extract_url(line.strip())
                 if url:
                     urls.add(url)
+                    # Debug: Print what URL was extracted from each line
+                    print(f"Extracted from {file_path}: {url}")
         return urls
 
     # Load URLs from files
@@ -28,7 +38,7 @@ def compare_files(file1_path, file2_path):
     only_in_file2 = urls_file2 - urls_file1  # In sorted but not unsorted
 
     # Print results
-    print(f"Total URLs in Unsorted File: {len(urls_file1)}")
+    print(f"\nTotal URLs in Unsorted File: {len(urls_file1)}")
     print(f"Total URLs in Sorted File: {len(urls_file2)}")
     print(f"Common URLs: {len(common_urls)}")
     print(f"URLs only in Unsorted File: {len(only_in_file1)}")
@@ -46,5 +56,5 @@ def compare_files(file1_path, file2_path):
 
 # Usage
 file1_path = "LinksOfInterest.txt"  # Replace with your unsorted file path
-file2_path = "LinksOfInterest.md"  # Replace with your sorted file path
+file2_path = "LinksOfInterest.md"   # Replace with your sorted file path
 compare_files(file1_path, file2_path)

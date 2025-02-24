@@ -37,6 +37,7 @@ from logging.handlers import QueueHandler, QueueListener
 )
 logger = logging.getLogger(__name__)"""
 
+
 @dataclass
 class WebLink:
     url: str
@@ -50,22 +51,23 @@ class WebLink:
     def __post_init__(self):
         self.domain = urlparse(self.url).netloc if self.url else None
 
+
 class URLValidator:
     def __init__(self, timeout: int = 10, max_workers: int = 10):
         self.timeout = timeout
         self.max_workers = max_workers
         self.logger = logging.getLogger(__name__)
-        
+
     async def check_url_validity(self, url: str) -> Tuple[str, bool]:
         """Check if a URL is valid and accessible."""
+        result = urlparse(url)
         try:
             # First validate URL format
-            result = urlparse(url)
             if not all([result.scheme, result.netloc]):
                 return url, False
 
             # Define common valid domains that might block HEAD requests
-            VALID_DOMAINS = {
+            valid_domains = {
                 'github.com', 'www.github.com',
                 'gitlab.com', 'www.gitlab.com',
                 'bitbucket.org', 'www.bitbucket.org',
@@ -75,7 +77,7 @@ class URLValidator:
             }
 
             # If the domain is in our trusted list, consider it valid
-            if result.netloc in VALID_DOMAINS:
+            if result.netloc in valid_domains:
                 return url, True
 
             # Then check if URL is accessible
@@ -111,16 +113,17 @@ class URLValidator:
         """Validate a batch of URLs concurrently."""
         tasks = [self.check_url_validity(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Update progress bar if provided
         if pbar is not None:
             pbar.update(len(urls))
-            
+
         return {
             url: valid for url,
-            valid in results 
+            valid in results
             if not isinstance(valid, Exception)
         }
+
 
 class WebLinkOrganizer:
     def __init__(self, config_path: Optional[str] = None):
@@ -142,57 +145,148 @@ class WebLinkOrganizer:
         """Validate all URLs and separate valid from invalid links."""
         unique_urls = {entry.url for entry in entries}
         total_urls = len(unique_urls)
-        
+
         # Create progress bar for URL validation
-        with tqdm(total=total_urls, 
-                 desc="Validating URLs", 
-                 unit="url",
-                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} URLs [{elapsed}<{remaining}]') as pbar:
-            
+        with tqdm(total=total_urls,
+                  desc="Validating URLs",
+                  unit="url",
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} URLs [{elapsed}<{remaining}]') as pbar:
+
             # Process URLs in batches
             batch_size = 50
-            url_batches = [list(unique_urls)[i:i + batch_size] 
-                          for i in range(0, len(unique_urls), batch_size)]
-            
+            url_batches = [list(unique_urls)[i:i + batch_size]
+                           for i in range(0, len(unique_urls), batch_size)]
+
             validity_map = {}
             for batch in url_batches:
                 batch_results = await self.url_validator.validate_urls_batch(set(batch), pbar)
                 validity_map.update(batch_results)
-            
+
             # Create secondary progress bar for processing entries
-            with tqdm(total=len(entries), 
-                     desc="Processing entries", 
-                     unit="entry",
-                     leave=False) as entry_pbar:
-                
+            with tqdm(total=len(entries),
+                      desc="Processing entries",
+                      unit="entry",
+                      leave=False) as entry_pbar:
+
                 valid_entries = []
                 invalid_entries = []
-                
+
                 for entry in entries:
                     if validity_map.get(entry.url, False):
                         valid_entries.append(entry)
                     else:
                         invalid_entries.append(entry)
                     entry_pbar.update(1)
-        
+
         # Print summary
         self.logger.info(f"Validation complete: {len(valid_entries)} valid, {len(invalid_entries)} invalid URLs")
         return valid_entries, invalid_entries
 
+    def calculate_category_score(self, url: str, description: str, category_config: dict) -> Tuple[float, List[str]]:
+        """
+        Calculate how well a URL and description match a category's keywords.
+        Returns a tuple of (score, matching_keywords).
+        """
+        logger = logging.getLogger(__name__)
+        url = url.lower()
+        description = description.lower()
+        score = 0
+        matching_keywords = []
+
+        # Get weights from config
+        settings = self.config['settings']['categorization']
+        url_weight = settings.get('url_match_weight', 3)
+        desc_weight = settings.get('description_match_weight', 2)
+        exact_bonus = settings.get('exact_match_bonus', 2)
+        partial_weight = settings.get('partial_match_weight', 1)
+
+        logger.debug(f"\nCalculating category score for:")
+        logger.debug(f"URL: {url}")
+        logger.debug(f"Description: {description}")
+
+        def check_keyword_match(text: str, keyword: str, is_url: bool = False) -> Tuple[bool, bool]:
+            """Check if keyword matches text exactly or partially."""
+            keyword = keyword.lower()
+            exact_match = f" {keyword} " in f" {text} " or text == keyword
+            partial_match = keyword in text if not exact_match else False
+
+            if exact_match or partial_match:
+                weight = url_weight if is_url else desc_weight
+                match_type = "exact" if exact_match else "partial"
+                location = "URL" if is_url else "description"
+                logger.debug(f"- Matched '{keyword}' ({match_type}) in {location}")
+
+            return exact_match, partial_match
+
+        # Check primary keywords (higher importance)
+        primary_keywords = category_config.get('keywords', {}).get('primary', [])
+        for keyword in primary_keywords:
+            # Check URL
+            exact_match, partial_match = check_keyword_match(url, keyword, is_url=True)
+            if exact_match:
+                score += url_weight * exact_bonus
+                matching_keywords.append(f"{keyword}(url,exact)")
+            elif partial_match:
+                score += url_weight * partial_weight
+                matching_keywords.append(f"{keyword}(url,partial)")
+
+            # Check description
+            exact_match, partial_match = check_keyword_match(description, keyword)
+            if exact_match:
+                score += desc_weight * exact_bonus
+                matching_keywords.append(f"{keyword}(desc,exact)")
+            elif partial_match:
+                score += desc_weight * partial_weight
+                matching_keywords.append(f"{keyword}(desc,partial)")
+
+        # Check secondary keywords (lower importance)
+        secondary_keywords = category_config.get('keywords', {}).get('secondary', [])
+        for keyword in secondary_keywords:
+            # Check URL
+            exact_match, partial_match = check_keyword_match(url, keyword, is_url=True)
+            if exact_match:
+                score += (url_weight * exact_bonus) / 2
+                matching_keywords.append(f"{keyword}(url,exact,secondary)")
+            elif partial_match:
+                score += (url_weight * partial_weight) / 2
+                matching_keywords.append(f"{keyword}(url,partial,secondary)")
+
+            # Check description
+            exact_match, partial_match = check_keyword_match(description, keyword)
+            if exact_match:
+                score += (desc_weight * exact_bonus) / 2
+                matching_keywords.append(f"{keyword}(desc,exact,secondary)")
+            elif partial_match:
+                score += (desc_weight * partial_weight) / 2
+                matching_keywords.append(f"{keyword}(desc,partial,secondary)")
+
+        # Check exclude keywords (negative impact)
+        exclude_keywords = category_config.get('keywords', {}).get('exclude', [])
+        for keyword in exclude_keywords:
+            if keyword in url or keyword in description:
+                score -= url_weight
+                logger.debug(f"- Found exclude keyword '{keyword}' (-{url_weight} points)")
+
+        logger.debug(f"Final score: {score}")
+        if matching_keywords:
+            logger.debug(f"Matching keywords: {', '.join(matching_keywords)}")
+
+        return score, matching_keywords
+
     def _categorize_chunk(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """Process a chunk of entries for categorization."""
         logger = logging.getLogger(__name__)
-        
+
         # Initialize categories including custom ones from entries
         categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
         custom_categories = {
-            entry.group: {"General": []} 
-            for entry in entries 
+            entry.group: {"General": []}
+            for entry in entries
             if entry.group and entry.group not in self.hierarchy
         }
         categorized.update(custom_categories)
         categorized["Uncategorized"] = {"General": []}
-        
+
         # Track assigned URLs to prevent duplicates
         assigned_urls = set()
 
@@ -200,17 +294,17 @@ class WebLinkOrganizer:
             if entry.url in assigned_urls:
                 logger.debug(f"\nSkipping duplicate URL: {entry.url}")
                 continue
-                
+
             desc = (entry.description or '').lower()
             url = entry.url.lower()
-            
-            logger.debug(f"\n{'='*50}")
+
+            logger.debug(f"\n{'=' * 50}")
             logger.debug(f"Processing URL: {entry.url}")
             logger.debug(f"Description: {entry.description}")
             logger.debug(f"Original group: {entry.group}")
-            
+
             assigned = False
-            
+
             # First: Use original group if it exists
             if entry.group:
                 group = entry.group
@@ -239,20 +333,20 @@ class WebLinkOrganizer:
                 # Get best category
                 best_category = max(category_scores.items(), key=lambda x: x[1]['score'])[0]
                 logger.debug(f"\nBest matching category: {best_category}")
-                
+
                 # Find best subcategory
                 best_subcat = None
                 best_subcat_score = 0
-                
+
                 logger.debug("\nSubcategory scoring:")
                 for subcat in self.hierarchy[best_category]['subcategories']:
                     subcat_score, subcat_keywords = self.calculate_category_score(
-                        url, desc, 
+                        url, desc,
                         {'keywords': {'primary': self.hierarchy[best_category]['subcategories'][subcat]['keywords']}}
                     )
-                    
+
                     logger.debug(f"- {subcat}: score={subcat_score}, keywords={', '.join(subcat_keywords)}")
-                    
+
                     if subcat_score > best_subcat_score:
                         best_subcat_score = subcat_score
                         best_subcat = subcat
@@ -269,7 +363,7 @@ class WebLinkOrganizer:
                         categorized[best_category][other_cat] = []
                     categorized[best_category][other_cat].append(entry)
                     logger.debug(f"\nAssigned to: {best_category}/{other_cat}")
-                
+
                 assigned_urls.add(entry.url)
                 continue
 
@@ -401,7 +495,7 @@ class WebLinkOrganizer:
             },
             'categories': WebLinkOrganizer.default_hierarchy()
         }
-        
+
         if config_path:
             try:
                 config_path = Path(config_path)
@@ -411,7 +505,7 @@ class WebLinkOrganizer:
                         if not loaded_config:
                             logger.warning("Empty configuration file, using defaults")
                             return default_config
-                        
+
                         # Merge with defaults to ensure all required settings exist
                         merged_config = {
                             'settings': {**default_config['settings'], **loaded_config.get('settings', {})},
@@ -424,10 +518,9 @@ class WebLinkOrganizer:
             except Exception as e:
                 logger.warning(f"Failed to load config file: {e}")
                 return default_config
-        
+
         logger.info("Using default configuration")
         return default_config
-
 
     def create_session(self) -> requests.Session:
         """Create a requests session with retry logic."""
@@ -478,13 +571,13 @@ class WebLinkOrganizer:
         logger = logging.getLogger(__name__)
         cache_key = url
         current_time = time.time()
-        
+
         # Check cache
         if cache_key in self.url_cache:
             cached_data = self.url_cache[cache_key]
             if current_time - cached_data['timestamp'] < self.settings.get('cache_duration', 86400):
                 return cached_data['title']
-        
+
         try:
             timeout = aiohttp.ClientTimeout(total=self.settings.get('timeout', 5))
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -493,7 +586,7 @@ class WebLinkOrganizer:
                         html = await response.text()
                         soup = BeautifulSoup(html, 'html.parser')
                         title = soup.title.string if soup.title else None
-                        
+
                         if title:
                             title = title.strip()
                             # Update cache
@@ -515,14 +608,14 @@ class WebLinkOrganizer:
             entry for entry in entries
             if not entry.description or entry.description == entry.url
         ]
-        
+
         if not entries_needing_titles:
             return entries
 
-        with tqdm(total=len(entries_needing_titles), 
-                 desc="Fetching titles", 
-                 unit="link") as pbar:
-            
+        with tqdm(total=len(entries_needing_titles),
+                  desc="Fetching titles",
+                  unit="link") as pbar:
+
             async def process_entry(entry: WebLink):
                 title = await self.fetch_title(entry.url)
                 if title:
@@ -539,7 +632,7 @@ class WebLinkOrganizer:
                             entry.description = "GitHub Repository"
                     else:
                         entry.description = f"Link from {domain}"
-                
+
                 entry.fetch_date = datetime.now()
                 pbar.update(1)
                 return entry
@@ -547,16 +640,16 @@ class WebLinkOrganizer:
             # Process in batches to avoid overwhelming the system
             batch_size = self.settings.get('concurrent_requests', 10)
             processed_entries = []
-            
+
             for i in range(0, len(entries_needing_titles), batch_size):
                 batch = entries_needing_titles[i:i + batch_size]
                 batch_results = await asyncio.gather(*[process_entry(entry) for entry in batch])
                 processed_entries.extend(batch_results)
                 await asyncio.sleep(0.1)  # Small delay between batches
-            
+
             # Update cache
             self.save_cache()
-            
+
             # Replace original entries with processed ones
             entry_map = {id(entry): entry for entry in processed_entries}
             return [entry_map.get(id(e), e) for e in entries]
@@ -566,7 +659,7 @@ class WebLinkOrganizer:
         logger = logging.getLogger(__name__)
         entries = []
         current_group = None
-        
+
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = [line.strip() for line in f if line.strip()]
@@ -617,7 +710,7 @@ class WebLinkOrganizer:
     def _finalize_categories(self, categorized: Dict) -> Dict:
         """Helper method to sort and clean up categories."""
         logger = logging.getLogger(__name__)
-        
+
         # Sort entries within each subcategory
         for main_cat in categorized:
             for subcat in categorized[main_cat]:
@@ -641,12 +734,12 @@ class WebLinkOrganizer:
         for main_cat in main_cats:
             if any(entries for entries in categorized[main_cat].values()):
                 filtered_subcats = {
-                    subcat: entries 
+                    subcat: entries
                     for subcat, entries in sorted(
                         categorized[main_cat].items(),
                         key=lambda x: (
-                            0 if x[0] == "General" else 
-                            2 if x[0].startswith("Other") else 
+                            0 if x[0] == "General" else
+                            2 if x[0].startswith("Other") else
                             1,
                             x[0].lower()
                         )
@@ -659,7 +752,6 @@ class WebLinkOrganizer:
 
         return filtered_categories
 
-
     def categorize_entries(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """
         Categorize entries with following priority:
@@ -669,18 +761,18 @@ class WebLinkOrganizer:
         """
         logger = logging.getLogger(__name__)
         logger.debug("\nStarting categorization process...")
-        
+
         with tqdm(total=len(entries), desc="Categorizing entries", unit="link") as pbar:
             # Initialize categories
             categorized = {main_cat: {} for main_cat in self.hierarchy.keys()}
             categorized["Uncategorized"] = {"General": []}
 
             for entry in entries:
-                logger.debug(f"\n{'='*50}")
+                logger.debug(f"\n{'=' * 50}")
                 logger.debug(f"Processing: {entry.url}")
                 logger.debug(f"Description: {entry.description}")
                 logger.debug(f"Original group: {entry.group}")
-                
+
                 assigned = False
                 desc = (entry.description or '').lower()
                 url = entry.url.lower()
@@ -689,26 +781,26 @@ class WebLinkOrganizer:
                 logger.debug("\nTrying automatic categorization:")
                 for main_cat, config in self.hierarchy.items():
                     matching_keywords = []
-                    
+
                     # Check main category keywords
                     for keyword in config['keywords']:
                         if keyword in desc:
                             matching_keywords.append(f"{keyword}(desc)")
                         if keyword in url:
                             matching_keywords.append(f"{keyword}(url)")
-                    
+
                     if matching_keywords:
                         logger.debug(f"Category '{main_cat}' matches with keywords: {', '.join(matching_keywords)}")
-                        
+
                         # Try to find appropriate subcategory
                         best_subcat = None
                         best_subcat_score = 0
                         subcategory_matches = {}
-                        
+
                         for subcat in config['subcategories']:
                             subcat_keywords = []
                             score = 0
-                            
+
                             for keyword in subcat.lower().split():
                                 if keyword in desc:
                                     score += 1
@@ -716,18 +808,18 @@ class WebLinkOrganizer:
                                 if keyword in url:
                                     score += 2
                                     subcat_keywords.append(f"{keyword}(url)")
-                            
+
                             if score > best_subcat_score:
                                 best_subcat_score = score
                                 best_subcat = subcat
                                 subcategory_matches[subcat] = subcat_keywords
-                        
+
                         if subcategory_matches:
                             logger.debug("Subcategory matches:")
                             for subcat, keywords in subcategory_matches.items():
                                 logger.debug(f"- {subcat}: {', '.join(keywords)}")
-                        
-                        # Assign to best subcategory or "Other"
+
+                        # Assign to the best subcategory or "Other"
                         if best_subcat:
                             if best_subcat not in categorized[main_cat]:
                                 categorized[main_cat][best_subcat] = []
@@ -739,7 +831,7 @@ class WebLinkOrganizer:
                                 categorized[main_cat][other_cat] = []
                             categorized[main_cat][other_cat].append(entry)
                             logger.debug(f"No specific subcategory found, assigned to: {main_cat}/{other_cat}")
-                        
+
                         assigned = True
                         break
 
@@ -748,7 +840,7 @@ class WebLinkOrganizer:
                     logger.debug("\nTrying original group categorization:")
                     group = entry.group
                     logger.debug(f"Original group: {group}")
-                    
+
                     # Check if this group matches any main category
                     for main_cat in self.hierarchy.keys():
                         if main_cat.lower() == group.lower():
@@ -780,47 +872,47 @@ class WebLinkOrganizer:
             logger.debug("\nFinalizing categories and sorting entries...")
             filtered_categories = self._finalize_categories(categorized)
             logger.debug("Categorization complete!")
-            
+
             return filtered_categories
 
     def categorize_entries_parallel(self, entries: List[WebLink]) -> Dict[str, Dict[str, List[WebLink]]]:
         """Categorize entries using parallel processing if the number of entries is above threshold."""
         logger = logging.getLogger(__name__)
         PARALLEL_THRESHOLD = 50  # Only use parallel processing for 50+ entries
-        
+
         if len(entries) < PARALLEL_THRESHOLD:
             logger.debug("Using single-threaded processing (entries below threshold)")
             return self.categorize_entries(entries)
-        
+
         # Determine optimal chunk size
         chunk_size = max(10, len(entries) // (os.cpu_count() or 1))
         chunks = [entries[i:i + chunk_size] for i in range(0, len(entries), chunk_size)]
         logger.debug(f"Split {len(entries)} entries into {len(chunks)} chunks of size ~{chunk_size}")
-        
+
         # Process chunks in parallel
         logger.debug("Starting parallel processing of chunks")
         with concurrent.futures.ProcessPoolExecutor() as executor:
             chunk_results = list(executor.map(self._categorize_chunk, chunks))
-        
+
         logger.debug("Merging results from parallel processing")
         # Merge results
         merged = {main_cat: {} for main_cat in self.hierarchy.keys()}
         merged["Uncategorized"] = {"General": []}
-        
+
         # First, collect all unique categories and subcategories
         all_categories = set()
         all_subcategories = {}
-        
+
         logger.debug("\nCollecting categories from chunks:")
         for i, result in enumerate(chunk_results):
-            logger.debug(f"\nProcessing chunk {i+1}/{len(chunks)}:")
+            logger.debug(f"\nProcessing chunk {i + 1}/{len(chunks)}:")
             for main_cat in result:
                 all_categories.add(main_cat)
                 if main_cat not in all_subcategories:
                     all_subcategories[main_cat] = set()
                 all_subcategories[main_cat].update(result[main_cat].keys())
                 logger.debug(f"- Found category '{main_cat}' with subcategories: {', '.join(result[main_cat].keys())}")
-        
+
         # Initialize the structure with all discovered categories
         logger.debug("\nInitializing category structure:")
         for cat in all_categories:
@@ -831,23 +923,23 @@ class WebLinkOrganizer:
                 if subcat not in merged[cat]:
                     merged[cat][subcat] = []
                     logger.debug(f"  - Added subcategory: {cat}/{subcat}")
-        
+
         # Merge the entries
         logger.debug("\nMerging entries from all chunks:")
-        entry_counts = {cat: {subcat: 0 for subcat in subcats} 
-                       for cat, subcats in all_subcategories.items()}
-        
+        entry_counts = {cat: {subcat: 0 for subcat in subcats}
+                        for cat, subcats in all_subcategories.items()}
+
         for result in chunk_results:
             for main_cat, subcats in result.items():
                 for subcat, entries in subcats.items():
                     merged[main_cat][subcat].extend(entries)
                     entry_counts[main_cat][subcat] += len(entries)
-        
+
         for main_cat, subcats in entry_counts.items():
             logger.debug(f"\nCategory '{main_cat}' entry counts:")
             for subcat, count in subcats.items():
                 logger.debug(f"- {subcat}: {count} entries")
-        
+
         # Sort entries within each subcategory
         logger.debug("\nSorting entries within categories:")
         for main_cat in merged:
@@ -860,7 +952,7 @@ class WebLinkOrganizer:
                     )
                 )
                 logger.debug(f"- Sorted {before_count} entries in {main_cat}/{subcat}")
-        
+
         # Create final sorted structure
         logger.debug("\nCreating final sorted structure:")
         filtered_categories = {}
@@ -869,16 +961,16 @@ class WebLinkOrganizer:
         )
         if "Uncategorized" in merged:
             main_cats.append("Uncategorized")
-        
+
         for main_cat in main_cats:
             if any(entries for entries in merged[main_cat].values()):
                 filtered_subcats = {
-                    subcat: entries 
+                    subcat: entries
                     for subcat, entries in sorted(
                         merged[main_cat].items(),
                         key=lambda x: (
-                            0 if x[0] == "General" else 
-                            2 if x[0].startswith("Other") else 
+                            0 if x[0] == "General" else
+                            2 if x[0].startswith("Other") else
                             1,
                             x[0].lower()
                         )
@@ -888,27 +980,28 @@ class WebLinkOrganizer:
                 if filtered_subcats:
                     filtered_categories[main_cat] = filtered_subcats
                     logger.debug(f"- Finalized '{main_cat}' with {len(filtered_subcats)} subcategories")
-        
+
         return filtered_categories
 
-    def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], invalid_links: List[WebLink], output_file: str):
+    def write_markdown(self, categories: Dict[str, Dict[str, List[WebLink]]], invalid_links: List[WebLink],
+                       output_file: str):
         """Write organized links to markdown file with proper heading hierarchy."""
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write main title and metadata
             f.write("# Organized Web Links\n\n")
             f.write(f"*Generated on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC*\n")
-            
+
             total_links = sum(
-                len(entries) 
-                for cat in categories.values() 
+                len(entries)
+                for cat in categories.values()
                 for entries in cat.values()
             )
             total_subcats = sum(len(subcats) for subcats in categories.values())
             f.write(f"*Total Links: {total_links} in {total_subcats} subcategories*\n\n")
-            
+
             # Table of Contents
             f.write("## Table of Contents\n\n")
-            
+
             # Sort main categories (keeping Uncategorized last)
             main_categories = sorted(
                 [cat for cat in categories.keys() if cat != "Uncategorized"]
@@ -919,61 +1012,61 @@ class WebLinkOrganizer:
             for main_cat in main_categories:
                 if not categories[main_cat]:
                     continue
-                
+
                 main_anchor = self.make_anchor(main_cat)
                 cat_count = sum(len(entries) for entries in categories[main_cat].values())
                 f.write(f"- [**{main_cat}**](#{main_anchor}) ({cat_count} links)\n")
-                
+
                 # Sort subcategories
                 subcats = sorted(
                     categories[main_cat].keys(),
                     key=lambda x: (
-                        0 if x == "General" else 
-                        2 if x.startswith("Other") else 
+                        0 if x == "General" else
+                        2 if x.startswith("Other") else
                         1,
                         x.lower()
                     )
                 )
-                
+
                 # Only show subcategories in TOC if there's more than just "General"
                 if not (len(subcats) == 1 and subcats[0] == "General"):
                     for subcat in subcats:
                         subcat_anchor = f"{main_anchor}-{self.make_anchor(subcat)}"
                         subcat_count = len(categories[main_cat][subcat])
                         f.write(f"  - [{subcat}](#{subcat_anchor}) ({subcat_count} links)\n")
-            
+
             f.write("\n---\n\n")
-            
+
             # Write categories and links
             for main_cat in main_categories:
                 if not categories[main_cat]:
                     continue
-                
+
                 f.write(f"## {main_cat}\n\n")
-                
+
                 # Sort subcategories
                 subcats = sorted(
                     categories[main_cat].keys(),
                     key=lambda x: (
-                        0 if x == "General" else 
-                        2 if x.startswith("Other") else 
+                        0 if x == "General" else
+                        2 if x.startswith("Other") else
                         1,
                         x.lower()
                     )
                 )
-                
+
                 # Check if category has only "General" subcategory
                 only_general = len(subcats) == 1 and subcats[0] == "General"
-                
+
                 for subcat in subcats:
                     entries = categories[main_cat][subcat]
                     if not entries:
                         continue
-                    
+
                     # Only write subheader if it's not the only "General" subcategory
                     if not (only_general and subcat == "General"):
                         f.write(f"### {subcat}\n\n")
-                    
+
                     # Sort entries
                     sorted_entries = sorted(
                         entries,
@@ -988,7 +1081,7 @@ class WebLinkOrganizer:
                             f.write(f"- {entry.description}: {entry.url}\n")
                         else:
                             f.write(f"- {entry.url}\n")
-                    
+
                     f.write("\n")
 
             # Add invalid links section at the end
@@ -1064,6 +1157,7 @@ class WebLinkOrganizer:
             }
         }"""
 
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -1098,48 +1192,50 @@ def parse_args():
     )
     return parser.parse_args()
 
+
 def setup_logging(debug: bool, log_queue: multiprocessing.Queue, log_file: str = "categorization.log"):
     """Setup logging configuration to output to both file and console with multiprocessing support."""
     # Get the root logger
     root_logger = logging.getLogger()
-    
+
     # Remove any existing handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    
+
     log_level = logging.DEBUG if debug else logging.INFO
-    
+
     # Create formatters
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(message)s')  # Simpler format for console
-    
+
     # Setup queue handler for multiprocessing
     queue_handler = QueueHandler(log_queue)
     root_logger.addHandler(queue_handler)
     root_logger.setLevel(logging.DEBUG)  # Capture all levels
-    
+
     # Prevent propagation of messages to avoid duplicates
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('asyncio').setLevel(logging.WARNING)
-    
+
     return root_logger
+
 
 async def main():
     """Enhanced main function with async support and progress tracking, including URL validation and parallel processing."""
     args = parse_args()
-    
+
     # Setup multiprocessing logging
     log_queue = multiprocessing.Queue()
-    
+
     # Create and start the logging listener
     file_handler = logging.FileHandler('categorization.log', mode='w', encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     file_handler.setLevel(logging.DEBUG)
-    
+
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter('%(message)s'))
     console_handler.setLevel(logging.DEBUG if args.debug else logging.INFO)
-    
+
     listener = QueueListener(
         log_queue,
         file_handler,
@@ -1147,42 +1243,42 @@ async def main():
         respect_handler_level=True
     )
     listener.start()
-    
+
     # Setup logging
     logger = setup_logging(args.debug, log_queue)
-    
+
     try:
         # Get current time in UTC
         current_time = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
-        
+
         # Log startup information
         logger.info(f"Starting weblinks organizer at {current_time} UTC")
         logger.info(f"User: {os.getlogin()}")
-        
+
         # Initialize organizer
         logger.info("Initializing WebLinkOrganizer...")
         organizer = WebLinkOrganizer(args.config)
-        
+
         # Parse input file
         logger.info(f"Parsing links from {args.input}...")
         entries = organizer.parse_links(args.input)
         initial_count = len(entries)
         logger.info(f"Found {initial_count} links")
-        
+
         # Track unique URLs
         unique_urls = len({entry.url for entry in entries})
         logger.info(f"Found {unique_urls} unique URLs (removed {initial_count - unique_urls} duplicates)")
-        
+
         # Validate URLs
         logger.info("Validating URLs...")
         valid_entries, invalid_entries = await organizer.validate_all_links(entries)
         logger.info(f"Found {len(valid_entries)} valid and {len(invalid_entries)} invalid links")
-        
+
         # Fetch missing titles for valid links
         if not args.no_cache:
             logger.info("Fetching missing titles...")
             valid_entries = await organizer.fetch_missing_titles(valid_entries)
-        
+
         # Categorize entries
         logger.info("Categorizing entries...")
         if len(valid_entries) >= 5000:  # Use parallel processing for larger sets
@@ -1194,7 +1290,7 @@ async def main():
 
         # Count categorized links
         categorized_count = sum(
-            len(entries) for cat in categories.values() 
+            len(entries) for cat in categories.values()
             for entries in cat.values()
         )
         logger.info(f"""Link Processing Summary:
@@ -1205,23 +1301,23 @@ async def main():
         Categorized links: {categorized_count}
         Links in final output: {categorized_count + len(invalid_entries)}
         """)
-        
+
         # Write output including invalid links section
         logger.info(f"Writing organized links to {args.output}...")
         organizer.write_markdown(categories, invalid_entries, args.output)
-        
+
         logger.info("Done!")
-        
+
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         if args.debug:
             logger.exception("Detailed error information:")
         sys.exit(1)
-    
+
     finally:
         listener.stop()
 
+
 if __name__ == "__main__":
-    
     # Run async main
     asyncio.run(main())
