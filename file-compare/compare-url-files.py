@@ -126,6 +126,6 @@ def compare_files(file1_path, file2_path):
 
 
 # Usage
-file1_path = "organized.md"
+file1_path = "LinksOfInterest.txt"
 file2_path = "LinksOfInterest.md"
 compare_files(file1_path, file2_path)
